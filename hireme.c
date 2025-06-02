@@ -49,6 +49,10 @@ u32 diffusion[32]={
 u8 inv_confusion1[256];  // Inverse of confusion[0..255]
 u8 inv_confusion2[256];  // Inverse of confusion[256..511]
 
+// Global duplicate tracking
+u8 duplicates[256];      // Array of duplicated values
+int num_duplicates = 0;  // Count of duplicated values
+
 // Matrix operations for GF(2) arithmetic
 void invert_diffusion_matrix(u32 original[32], u32 inverse[32]) {
     // Create identity matrix for inverse
@@ -128,7 +132,45 @@ void test_matrix_inversion(u32 original[32], u32 inverse[32]) {
     }
 }
 
+void find_and_print_duplicates() {
+    printf("Analyzing confusion matrix first half for duplicates...\n");
+    
+    // Count occurrences of each value
+    int count[256] = {0};
+    for (int i = 0; i < 256; i++) {
+        count[confusion[i]]++;
+    }
+    
+    // Find duplicates, store them globally, and print their positions
+    printf("Duplicated values in confusion[0..255]:\n");
+    num_duplicates = 0;
+    for (int value = 0; value < 256; value++) {
+        if (count[value] > 1) {
+            // Store in global duplicates array
+            duplicates[num_duplicates++] = value;
+            
+            printf("  Value 0x%02x (%d) appears %d times at positions: ", 
+                   value, value, count[value]);
+            
+            // Print all positions where this value appears
+            int first = 1;
+            for (int i = 0; i < 256; i++) {
+                if (confusion[i] == value) {
+                    if (!first) printf(", ");
+                    printf("%d", i);
+                    first = 0;
+                }
+            }
+            printf("\n");
+        }
+    }
+    printf("Total duplicated values: %d\n\n", num_duplicates);
+}
+
 void create_inverse_confusion() {
+    // Find and print duplicates first
+    find_and_print_duplicates();
+    
     // Initialize inverse arrays
     memset(inv_confusion1, 0, sizeof(inv_confusion1));
     memset(inv_confusion2, 0, sizeof(inv_confusion2));
@@ -159,7 +201,39 @@ void Forward(u8 c[32], u8 d[32], u8 s[512], u32 p[32]) {
         d[i] = s[c[i*2]] ^ s[c[i*2+1] + 256];
 }
 
+// Check if any element of c[] contains a duplicated confusion value from first half
+int contains_duplicate_confusion_value(u8 c[32], u32 iteration) {
+    // Check if any element in c[] matches a pre-computed duplicate
+    for (int i = 0; i < 32; i++) {
+        for (int j = 0; j < num_duplicates; j++) {
+            if (c[i] == duplicates[j]) {
+                printf("Warning (iteration %u): Vector c[%d] = 0x%02x is a duplicated value in confusion matrix first half\n", iteration + 1, i, c[i]);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 void Backward(u8 c[32], u8 d[32], u8 s[512], u32 p_inv[32]) {
+    // Print the candidate decompressed output we're working backwards from
+    printf("Working backwards from candidate 32-byte state:\n");
+    printf("  Hex: ");
+    for (int i = 0; i < 32; i++) {
+        printf("%02x ", c[i]);
+        if ((i + 1) % 16 == 0) printf("\n       ");
+    }
+    printf("\n");
+    printf("  ASCII: \"");
+    for (int i = 0; i < 32; i++) {
+        if (c[i] >= 32 && c[i] <= 126) {
+            printf("%c", c[i]);
+        } else {
+            printf(".");
+        }
+    }
+    printf("\"\n\n");
+    
     // Reverse the 256 rounds
     for(u32 i = 0; i < 256; i++) {
         u8 temp[32];
@@ -171,6 +245,18 @@ void Backward(u8 c[32], u8 d[32], u8 s[512], u32 p_inv[32]) {
                 temp[j] ^= c[k] * ((p_inv[j] >> k) & 1);
         }
         
+        // Print state after inverse diffusion
+        printf("Iteration %u - After inverse diffusion:\n", i + 1);
+        printf("  Hex: ");
+        for (int j = 0; j < 32; j++) {
+            printf("%02x ", temp[j]);
+            if ((j + 1) % 16 == 0 && j < 31) printf("\n       ");
+        }
+        printf("\n");
+        
+        // Check if temp vector has duplicated confusion values before applying inverse
+        contains_duplicate_confusion_value(temp, i);
+        
         // Apply inverse confusion (first half)
         for(u8 j = 0; j < 32; j++) {
             c[j] = inv_confusion1[temp[j]];
@@ -180,6 +266,15 @@ void Backward(u8 c[32], u8 d[32], u8 s[512], u32 p_inv[32]) {
 
 int solve_challenge() {
     u8 target[] = "Hire me!!!!!!!!";
+    
+    // Print target in byte format
+    printf("Target output:\n");
+    printf("  Hex: ");
+    for (int i = 0; i < 16; i++) {
+        printf("%02x ", target[i]);
+    }
+    printf("\n");
+    printf("  ASCII: \"%.16s\"\n\n", target);
     
     // Create inverse confusion lookup tables
     create_inverse_confusion();

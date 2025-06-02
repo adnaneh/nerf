@@ -142,29 +142,6 @@ void create_inverse_confusion() {
     for (int i = 0; i < 256; i++) {
         inv_confusion2[confusion[256 + i]] = i;
     }
-    
-    // Test if confusion[0..255] is a permutation
-    printf("\nChecking if confusion[0..255] is a permutation:\n");
-    int count[256] = {0};
-    for (int i = 0; i < 256; i++) {
-        count[confusion[i]]++;
-    }
-    int is_permutation = 1;
-    for (int i = 0; i < 256; i++) {
-        if (count[i] != 1) {
-            is_permutation = 0;
-            if (count[i] > 1) {
-                printf("Value 0x%02x appears %d times\n", i, count[i]);
-            } else {
-                printf("Value 0x%02x never appears\n", i);
-            }
-        }
-    }
-    if (is_permutation) {
-        printf("✓ confusion[0..255] is a valid permutation\n");
-    } else {
-        printf("✗ confusion[0..255] is NOT a permutation\n");
-    }
 }
 
 void Forward(u8 c[32], u8 d[32], u8 s[512], u32 p[32]) {

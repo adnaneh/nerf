@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+
+def create_svg_visualization():
+    """Create an SVG diagram showing the diffusion properties"""
+    
+    svg_content = '''<?xml version="1.0" encoding="UTF-8"?>
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: bold 20px sans-serif; }
+    .label { font: 12px sans-serif; }
+    .small { font: 10px sans-serif; }
+    .diagonal { fill: #e8f4f8; stroke: #2196F3; }
+    .offdiag { fill: #ffebee; stroke: #f44336; }
+    .connection { stroke: #666; stroke-width: 0.5; opacity: 0.3; }
+    .strong { stroke: #333; stroke-width: 1; opacity: 0.6; }
+  </style>
+  
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" class="title">Inverse Diffusion Matrix Properties</text>
+  
+  <!-- Block Structure Visualization -->
+  <g transform="translate(50, 60)">
+    <text x="150" y="-10" text-anchor="middle" class="label">Block Structure (8x8 blocks)</text>
+    
+    <!-- Draw 4x4 grid of blocks -->
+    <g id="blocks">
+      <!-- Row 0 -->
+      <rect x="0" y="0" width="75" height="75" class="diagonal"/>
+      <text x="37.5" y="40" text-anchor="middle" class="small">D: 18/64</text>
+      <text x="37.5" y="50" text-anchor="middle" class="small">(28%)</text>
+      
+      <rect x="75" y="0" width="75" height="75" class="offdiag"/>
+      <text x="112.5" y="40" text-anchor="middle" class="small">32/64</text>
+      <text x="112.5" y="50" text-anchor="middle" class="small">(50%)</text>
+      
+      <rect x="150" y="0" width="75" height="75" class="offdiag"/>
+      <text x="187.5" y="40" text-anchor="middle" class="small">36/64</text>
+      <text x="187.5" y="50" text-anchor="middle" class="small">(56%)</text>
+      
+      <rect x="225" y="0" width="75" height="75" class="offdiag"/>
+      <text x="262.5" y="40" text-anchor="middle" class="small">34/64</text>
+      <text x="262.5" y="50" text-anchor="middle" class="small">(53%)</text>
+      
+      <!-- Row 1 -->
+      <rect x="0" y="75" width="75" height="75" class="offdiag"/>
+      <text x="37.5" y="115" text-anchor="middle" class="small">32/64</text>
+      
+      <rect x="75" y="75" width="75" height="75" class="diagonal"/>
+      <text x="112.5" y="115" text-anchor="middle" class="small">D: 18/64</text>
+      
+      <rect x="150" y="75" width="75" height="75" class="offdiag"/>
+      <text x="187.5" y="115" text-anchor="middle" class="small">34/64</text>
+      
+      <rect x="225" y="75" width="75" height="75" class="offdiag"/>
+      <text x="262.5" y="115" text-anchor="middle" class="small">36/64</text>
+      
+      <!-- Row 2 -->
+      <rect x="0" y="150" width="75" height="75" class="offdiag"/>
+      <text x="37.5" y="190" text-anchor="middle" class="small">36/64</text>
+      
+      <rect x="75" y="150" width="75" height="75" class="offdiag"/>
+      <text x="112.5" y="190" text-anchor="middle" class="small">34/64</text>
+      
+      <rect x="150" y="150" width="75" height="75" class="diagonal"/>
+      <text x="187.5" y="190" text-anchor="middle" class="small">D: 18/64</text>
+      
+      <rect x="225" y="150" width="75" height="75" class="offdiag"/>
+      <text x="262.5" y="190" text-anchor="middle" class="small">32/64</text>
+      
+      <!-- Row 3 -->
+      <rect x="0" y="225" width="75" height="75" class="offdiag"/>
+      <text x="37.5" y="265" text-anchor="middle" class="small">34/64</text>
+      
+      <rect x="75" y="225" width="75" height="75" class="offdiag"/>
+      <text x="112.5" y="265" text-anchor="middle" class="small">36/64</text>
+      
+      <rect x="150" y="225" width="75" height="75" class="offdiag"/>
+      <text x="187.5" y="265" text-anchor="middle" class="small">32/64</text>
+      
+      <rect x="225" y="225" width="75" height="75" class="diagonal"/>
+      <text x="262.5" y="265" text-anchor="middle" class="small">D: 18/64</text>
+    </g>
+    
+    <!-- Labels -->
+    <text x="-20" y="37.5" text-anchor="middle" class="small">B0</text>
+    <text x="-20" y="112.5" text-anchor="middle" class="small">B1</text>
+    <text x="-20" y="187.5" text-anchor="middle" class="small">B2</text>
+    <text x="-20" y="262.5" text-anchor="middle" class="small">B3</text>
+    
+    <text x="37.5" y="-20" text-anchor="middle" class="small">B0</text>
+    <text x="112.5" y="-20" text-anchor="middle" class="small">B1</text>
+    <text x="187.5" y="-20" text-anchor="middle" class="small">B2</text>
+    <text x="262.5" y="-20" text-anchor="middle" class="small">B3</text>
+  </g>
+  
+  <!-- Avalanche Effect Visualization -->
+  <g transform="translate(400, 60)">
+    <text x="150" y="-10" text-anchor="middle" class="label">Avalanche Effect</text>
+    <text x="150" y="5" text-anchor="middle" class="small">Single bit → 15 output bits</text>
+    
+    <!-- Input bit -->
+    <circle cx="75" cy="100" r="5" fill="#2196F3"/>
+    <text x="75" y="120" text-anchor="middle" class="small">Input bit 0</text>
+    
+    <!-- Output bits affected -->
+    <g id="outputs">
+      <circle cx="150" cy="40" r="4" fill="#f44336"/>
+      <circle cx="170" cy="50" r="4" fill="#f44336"/>
+      <circle cx="190" cy="45" r="4" fill="#f44336"/>
+      <circle cx="210" cy="55" r="4" fill="#f44336"/>
+      <circle cx="150" cy="80" r="4" fill="#f44336"/>
+      <circle cx="170" cy="90" r="4" fill="#f44336"/>
+      <circle cx="190" cy="85" r="4" fill="#f44336"/>
+      <circle cx="210" cy="95" r="4" fill="#f44336"/>
+      <circle cx="150" cy="120" r="4" fill="#f44336"/>
+      <circle cx="170" cy="130" r="4" fill="#f44336"/>
+      <circle cx="190" cy="125" r="4" fill="#f44336"/>
+      <circle cx="210" cy="135" r="4" fill="#f44336"/>
+      <circle cx="180" cy="160" r="4" fill="#f44336"/>
+      <circle cx="200" cy="165" r="4" fill="#f44336"/>
+      <circle cx="220" cy="160" r="4" fill="#f44336"/>
+    </g>
+    
+    <!-- Connections -->
+    <line x1="80" y1="100" x2="145" y2="40" class="connection"/>
+    <line x1="80" y1="100" x2="165" y2="50" class="connection"/>
+    <line x1="80" y1="100" x2="185" y2="45" class="connection"/>
+    <line x1="80" y1="100" x2="145" y2="80" class="connection"/>
+    <line x1="80" y1="100" x2="165" y2="90" class="connection"/>
+    <line x1="80" y1="100" x2="145" y2="120" class="connection"/>
+    <line x1="80" y1="100" x2="175" y2="160" class="connection"/>
+    
+    <text x="180" y="190" text-anchor="middle" class="small">15 affected bits</text>
+    <text x="180" y="205" text-anchor="middle" class="small">across all bytes</text>
+  </g>
+  
+  <!-- Key Properties -->
+  <g transform="translate(50, 400)">
+    <text x="0" y="0" class="label">Key Properties:</text>
+    <text x="20" y="25" class="small">• Perfect balance: Each row/column has exactly 15 ones</text>
+    <text x="20" y="45" class="small">• Diagonal blocks (blue) have low density (28%) for local mixing</text>
+    <text x="20" y="65" class="small">• Off-diagonal blocks (red) have high density (50-56%) for cross-byte mixing</text>
+    <text x="20" y="85" class="small">• 85% of connections cross block boundaries</text>
+    <text x="20" y="105" class="small">• Each input bit affects ~15 output bits (47% avalanche)</text>
+    <text x="20" y="125" class="small">• Block-symmetric density pattern ensures balanced diffusion</text>
+  </g>
+  
+  <!-- Cross-byte mixing diagram -->
+  <g transform="translate(450, 350)">
+    <text x="125" y="0" text-anchor="middle" class="label">Cross-Byte Mixing</text>
+    
+    <!-- Draw byte boxes -->
+    <rect x="0" y="20" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="30" y="40" text-anchor="middle" class="small">Byte 0</text>
+    
+    <rect x="190" y="20" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="220" y="40" text-anchor="middle" class="small">Byte 0</text>
+    
+    <rect x="0" y="60" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="30" y="80" text-anchor="middle" class="small">Byte 1</text>
+    
+    <rect x="190" y="60" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="220" y="80" text-anchor="middle" class="small">Byte 1</text>
+    
+    <rect x="0" y="100" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="30" y="120" text-anchor="middle" class="small">Byte 2</text>
+    
+    <rect x="190" y="100" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="220" y="120" text-anchor="middle" class="small">Byte 2</text>
+    
+    <rect x="0" y="140" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="30" y="160" text-anchor="middle" class="small">Byte 3</text>
+    
+    <rect x="190" y="140" width="60" height="30" fill="none" stroke="#333"/>
+    <text x="220" y="160" text-anchor="middle" class="small">Byte 3</text>
+    
+    <!-- Mixing arrows -->
+    <path d="M 60 35 Q 125 35 190 35" fill="none" class="connection" stroke-width="3"/>
+    <path d="M 60 35 Q 125 55 190 75" fill="none" class="strong" stroke-width="5"/>
+    <path d="M 60 35 Q 125 75 190 115" fill="none" class="strong" stroke-width="5"/>
+    <path d="M 60 35 Q 125 95 190 155" fill="none" class="strong" stroke-width="5"/>
+    
+    <text x="-20" y="90" text-anchor="middle" class="small" transform="rotate(-90 -20 90)">Input</text>
+    <text x="270" y="90" text-anchor="middle" class="small" transform="rotate(-90 270 90)">Output</text>
+  </g>
+</svg>'''
+    
+    with open('/Users/adnanehamid/nerf/diffusion_properties.svg', 'w') as f:
+        f.write(svg_content)
+    
+    print("SVG visualization saved to: diffusion_properties.svg")
+    print("\nYou can open this file in a web browser to see the visual diagram showing:")
+    print("- Block structure with density patterns")
+    print("- Avalanche effect visualization")
+    print("- Cross-byte mixing patterns")
+    print("- Key cryptographic properties")
+
+if __name__ == "__main__":
+    create_svg_visualization()

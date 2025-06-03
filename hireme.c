@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 typedef unsigned char u8;
 typedef unsigned int u32;
@@ -280,6 +281,48 @@ int contains_duplicate_confusion_value(u8 c[32], u32 iteration) {
     return found_any;
 }
 
+void Backward_Random(u8 c[32], u8 d[32], u8 s[512], u32 p_inv[32]) {
+    // Reverse the 256 rounds
+    for(u32 i = 0; i < 256; i++) {
+        u8 temp[32];
+        
+        // Apply inverse diffusion
+        for(u8 j = 0; j < 32; j++) {
+            temp[j] = 0;
+            for(u8 k = 0; k < 32; k++)
+                temp[j] ^= c[k] * ((p_inv[j] >> k) & 1);
+        }
+        
+        // Apply inverse confusion (first half) with random selection for duplicates
+        for(u8 j = 0; j < 32; j++) {
+            u8 target_value = temp[j];
+            
+            // Find all positions in confusion[0..255] that map to this value
+            u8 candidates[256];
+            int num_candidates = 0;
+            
+            for (int k = 0; k < 256; k++) {
+                if (confusion[k] == target_value) {
+                    candidates[num_candidates++] = k;
+                }
+            }
+            
+            if (num_candidates == 0) {
+                // This shouldn't happen if inverse table was built correctly
+                printf("Error: No inverse found for value 0x%02x at position %d\n", target_value, j);
+                c[j] = 0;
+            } else if (num_candidates == 1) {
+                // Unique inverse
+                c[j] = candidates[0];
+            } else {
+                // Multiple candidates - pick randomly
+                int choice = rand() % num_candidates;
+                c[j] = candidates[choice];
+            }
+        }
+    }
+}
+
 void Backward(u8 c[32], u8 d[32], u8 s[512], u32 p_inv[32]) {
     // Print the candidate decompressed output we're working backwards from
     printf("Working backwards from candidate 32-byte state:\n");
@@ -412,6 +455,97 @@ int solve_challenge() {
                 pre_final[i * 2] = 0;
                 pre_final[i * 2 + 1] = 0;
             }
+        }
+    }
+    
+    // Mode 3: Random search
+    if (1) {  // Enable random search mode
+        printf("\n\n=== Random Search Mode ===\n");
+        srand(time(NULL));  // Initialize random seed
+        
+        int max_attempts = 100000;
+        int attempt = 0;
+        int found_solution = 0;
+        
+        while (attempt < max_attempts && !found_solution) {
+            attempt++;
+            
+            // Generate random pre_final values
+            u8 random_pre_final[32];
+            for (int i = 0; i < 16; i++) {
+                // Pick random a and b values
+                random_pre_final[i * 2] = rand() % 256;      // Random a
+                random_pre_final[i * 2 + 1] = rand() % 256;  // Random b
+            }
+            
+            // Test if this produces the target
+            u8 test_compression[16];
+            for (int i = 0; i < 16; i++) {
+                test_compression[i] = confusion[random_pre_final[i*2]] ^ 
+                                     confusion[random_pre_final[i*2+1] + 256];
+            }
+            
+            if (memcmp(test_compression, target, 16) == 0) {
+                printf("SUCCESS! Found valid pre_final at attempt %d\n", attempt);
+                printf("Pre_final values:\n");
+                for (int i = 0; i < 32; i++) {
+                    printf("0x%02x", random_pre_final[i]);
+                    if (i < 31) printf(",");
+                    if ((i + 1) % 16 == 0) printf("\n");
+                }
+                printf("\n");
+                
+                // Now use Backward_Random to find original input
+                printf("\nApplying Backward_Random to find original input...\n");
+                u8 original_random[32];
+                memcpy(original_random, random_pre_final, 32);
+                u8 dummy[32];
+                Backward_Random(original_random, dummy, confusion, diffusion_inv);
+                
+                // Verify the solution
+                printf("\nVerifying solution...\n");
+                u8 verify_input[32];
+                u8 verify_output[32];
+                memcpy(verify_input, original_random, 32);
+                Forward(verify_input, verify_output, confusion, diffusion);
+                
+                printf("Original input found:\n");
+                for (int i = 0; i < 32; i++) {
+                    printf("0x%02x", original_random[i]);
+                    if (i < 31) printf(",");
+                    if ((i + 1) % 8 == 0) printf("\n");
+                }
+                
+                printf("\nVerification - Target: %.16s\n", target);
+                printf("Verification - Output: ");
+                for (int i = 0; i < 16; i++) {
+                    if (verify_output[i] >= 32 && verify_output[i] <= 126) {
+                        printf("%c", verify_output[i]);
+                    } else {
+                        printf(".");
+                    }
+                }
+                printf("\n");
+                
+                if (memcmp(verify_output, target, 16) == 0) {
+                    printf("✓ Solution verified!\n");
+                    found_solution = 1;
+                    
+                    // Update pre_final and original_input for final output
+                    memcpy(pre_final, random_pre_final, 32);
+                    memcpy(original_input, original_random, 32);
+                } else {
+                    printf("✗ Verification failed - continuing search...\n");
+                }
+            }
+            
+            if (attempt % 10000 == 0) {
+                printf("Attempt %d/%d...\n", attempt, max_attempts);
+            }
+        }
+        
+        if (!found_solution) {
+            printf("No solution found after %d attempts\n", max_attempts);
         }
     }
     

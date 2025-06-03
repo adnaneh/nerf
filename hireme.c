@@ -339,7 +339,8 @@ int solve_challenge() {
         printf("%02x ", target[i]);
     }
     printf("\n");
-    printf("  ASCII: \"%.16s\"\n\n", target);
+    printf("  ASCII: \"%.15s\" (15 chars + null byte)\n", target);
+    printf("  Length check: strlen=\"%zu\", array has 16 bytes\n\n", strlen((char*)target));
     
     // Create inverse confusion lookup tables
     create_inverse_confusion();
@@ -367,7 +368,7 @@ int solve_challenge() {
         // Try all possible values for the first element (even indices)
 
         int a = 82;
-        int alt_a = 0;  // Alternative value for a
+        int alt_b = 82;  // Alternative value for b
         u8 needed_b = target_byte ^ confusion[a];
         
         // Find if this value exists in the second half
@@ -381,20 +382,34 @@ int solve_challenge() {
             printf("Warning: For position %d, target byte 0x%02x with a=%d (confusion[%d]=0x%02x), needed_b=0x%02x is not found in confusion[256..511]\n", 
                    i, target_byte, a, a, confusion[a], needed_b);
             
-            // Try alternative value
-            printf("Trying alternative a=%d...\n", alt_a);
-            needed_b = target_byte ^ confusion[alt_a];
-            b = inv_confusion2[needed_b];
+            // Try with alternative b value
+            printf("Trying alternative b=%d (confusion[%d]=0x%02x)...\n", alt_b, alt_b + 256, confusion[alt_b + 256]);
             
-            if (confusion[b + 256] == needed_b) {
-                pre_final[i * 2] = alt_a;
-                pre_final[i * 2 + 1] = b;
-                printf("Success with alternative: Position %d, target=0x%02x, a=%d (0x%02x), b=%d (0x%02x), confusion[%d]=0x%02x, confusion[%d]=0x%02x\n", 
-                       i, target_byte, alt_a, alt_a, b, b, alt_a, confusion[alt_a], b + 256, confusion[b + 256]);
-            } else {
-                printf("Alternative also failed: needed_b=0x%02x is not found in confusion[256..511]\n", needed_b);
+            // Calculate what 'a' we need for this alternative b
+            // We need: confusion[needed_a] XOR confusion[alt_b + 256] = target_byte
+            // Therefore: confusion[needed_a] = target_byte XOR confusion[alt_b + 256]
+            u8 b_value = confusion[alt_b + 256];
+            u8 needed_a_value = target_byte ^ b_value;
+            
+            printf("  Need confusion[a] = 0x%02x ^ 0x%02x = 0x%02x\n", target_byte, b_value, needed_a_value);
+            
+            // Find 'a' where confusion[a] = needed_a_value
+            int found = 0;
+            for (int search_a = 0; search_a < 256; search_a++) {
+                if (confusion[search_a] == needed_a_value) {
+                    pre_final[i * 2] = search_a;
+                    pre_final[i * 2 + 1] = alt_b;
+                    printf("Success with alternative: Position %d, target=0x%02x, a=%d (0x%02x), b=%d (0x%02x), confusion[%d]=0x%02x, confusion[%d]=0x%02x\n", 
+                           i, target_byte, search_a, search_a, alt_b, alt_b, search_a, confusion[search_a], alt_b + 256, confusion[alt_b + 256]);
+                    found = 1;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                printf("Alternative also failed: needed confusion[a]=0x%02x is not found in confusion[0..255]\n", needed_a_value);
                 // Set default values
-                pre_final[i * 2] = alt_a;
+                pre_final[i * 2] = 0;
                 pre_final[i * 2 + 1] = 0;
             }
         }
@@ -459,7 +474,82 @@ int solve_challenge() {
     return memcmp(test_output, target, 16);
 }
 
+void test_specific_input() {
+    printf("\n=== Testing specific input ===\n");
+    
+    u8 input[32] = {
+        0x66,0xd5,0x4e,0x28,0x5f,0xff,0x6b,0x53,0xac,0x3b,0x34,0x14,0xb5,0x3c,0xb2,0xc6,
+        0xa4,0x85,0x1e,0x0d,0x86,0xc7,0x4f,0xba,0x75,0x5e,0xcb,0xc3,0x6e,0x48,0x79,0x8f
+    };
+    
+    printf("Original input (hex):\n");
+    for (int i = 0; i < 32; i++) {
+        printf("%02x ", input[i]);
+        if ((i + 1) % 16 == 0) printf("\n");
+    }
+    
+    // Apply Forward algorithm to original
+    u8 output[32];
+    u8 temp_input[32];
+    memcpy(temp_input, input, 32);
+    Forward(temp_input, output, confusion, diffusion);
+    
+    printf("\nOutput after Forward (hex):\n");
+    for (int i = 0; i < 16; i++) {
+        printf("%02x ", output[i]);
+    }
+    printf("\n");
+    
+    printf("Output as string: \"");
+    for (int i = 0; i < 16; i++) {
+        if (output[i] >= 32 && output[i] <= 126) {
+            printf("%c", output[i]);
+        } else {
+            printf(".");
+        }
+    }
+    printf("\"\n");
+    
+    // Now test with reversed input
+    printf("\n=== Testing reversed input ===\n");
+    
+    u8 reversed_input[32];
+    for (int i = 0; i < 32; i++) {
+        reversed_input[i] = input[31 - i];
+    }
+    
+    printf("Reversed input (hex):\n");
+    for (int i = 0; i < 32; i++) {
+        printf("%02x ", reversed_input[i]);
+        if ((i + 1) % 16 == 0) printf("\n");
+    }
+    
+    // Apply Forward algorithm to reversed
+    memcpy(temp_input, reversed_input, 32);
+    Forward(temp_input, output, confusion, diffusion);
+    
+    printf("\nOutput after Forward (hex):\n");
+    for (int i = 0; i < 16; i++) {
+        printf("%02x ", output[i]);
+    }
+    printf("\n");
+    
+    printf("Output as string: \"");
+    for (int i = 0; i < 16; i++) {
+        if (output[i] >= 32 && output[i] <= 126) {
+            printf("%c", output[i]);
+        } else {
+            printf(".");
+        }
+    }
+    printf("\"\n");
+}
+
 int main(int argc, char* argv[]) {
+    // Test specific input first
+    test_specific_input();
+    
+    // Then run the challenge solver
     int result = solve_challenge();
     
     if (result == 0) {

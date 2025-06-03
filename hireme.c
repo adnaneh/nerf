@@ -133,24 +133,27 @@ void test_matrix_inversion(u32 original[32], u32 inverse[32]) {
 }
 
 void find_and_print_duplicates() {
-    printf("Analyzing confusion matrix first half for duplicates...\n");
+    printf("Analyzing confusion matrix for duplicates and missing values...\n\n");
     
-    // Count occurrences of each value
-    int count[256] = {0};
+    // Analyze first half
+    printf("=== First half analysis (confusion[0..255]) ===\n");
+    
+    // Count occurrences of each value in first half
+    int count1[256] = {0};
     for (int i = 0; i < 256; i++) {
-        count[confusion[i]]++;
+        count1[confusion[i]]++;
     }
     
-    // Find duplicates, store them globally, and print their positions
-    printf("Duplicated values in confusion[0..255]:\n");
+    // Find and print duplicates for first half
+    printf("Duplicated values:\n");
     num_duplicates = 0;
     for (int value = 0; value < 256; value++) {
-        if (count[value] > 1) {
+        if (count1[value] > 1) {
             // Store in global duplicates array
             duplicates[num_duplicates++] = value;
             
             printf("  Value 0x%02x (%d) appears %d times at positions: ", 
-                   value, value, count[value]);
+                   value, value, count1[value]);
             
             // Print all positions where this value appears
             int first = 1;
@@ -165,6 +168,66 @@ void find_and_print_duplicates() {
         }
     }
     printf("Total duplicated values: %d\n\n", num_duplicates);
+    
+    // Find and print missing values for first half
+    printf("Missing values:\n");
+    int missing_count1 = 0;
+    for (int value = 0; value < 256; value++) {
+        if (count1[value] == 0) {
+            if (missing_count1 > 0 && missing_count1 % 8 == 0) printf("\n  ");
+            else if (missing_count1 > 0) printf(", ");
+            else printf("  ");
+            printf("0x%02x", value);
+            missing_count1++;
+        }
+    }
+    printf("\nTotal missing values: %d\n\n", missing_count1);
+    
+    // Analyze second half
+    printf("=== Second half analysis (confusion[256..511]) ===\n");
+    
+    // Count occurrences of each value in second half
+    int count2[256] = {0};
+    for (int i = 256; i < 512; i++) {
+        count2[confusion[i]]++;
+    }
+    
+    // Find and print duplicates for second half
+    printf("Duplicated values:\n");
+    int duplicates2_count = 0;
+    for (int value = 0; value < 256; value++) {
+        if (count2[value] > 1) {
+            duplicates2_count++;
+            printf("  Value 0x%02x (%d) appears %d times at positions: ", 
+                   value, value, count2[value]);
+            
+            // Print all positions where this value appears
+            int first = 1;
+            for (int i = 256; i < 512; i++) {
+                if (confusion[i] == value) {
+                    if (!first) printf(", ");
+                    printf("%d", i - 256);  // Show relative position within second half
+                    first = 0;
+                }
+            }
+            printf("\n");
+        }
+    }
+    printf("Total duplicated values: %d\n\n", duplicates2_count);
+    
+    // Find and print missing values for second half
+    printf("Missing values:\n");
+    int missing_count2 = 0;
+    for (int value = 0; value < 256; value++) {
+        if (count2[value] == 0) {
+            if (missing_count2 > 0 && missing_count2 % 8 == 0) printf("\n  ");
+            else if (missing_count2 > 0) printf(", ");
+            else printf("  ");
+            printf("0x%02x", value);
+            missing_count2++;
+        }
+    }
+    printf("\nTotal missing values: %d\n\n", missing_count2);
 }
 
 void create_inverse_confusion() {
@@ -204,15 +267,17 @@ void Forward(u8 c[32], u8 d[32], u8 s[512], u32 p[32]) {
 // Check if any element of c[] contains a duplicated confusion value from first half
 int contains_duplicate_confusion_value(u8 c[32], u32 iteration) {
     // Check if any element in c[] matches a pre-computed duplicate
+    int found_any = 0;
     for (int i = 0; i < 32; i++) {
         for (int j = 0; j < num_duplicates; j++) {
             if (c[i] == duplicates[j]) {
                 printf("Warning (iteration %u): Vector c[%d] = 0x%02x is a duplicated value in confusion matrix first half\n", iteration + 1, i, c[i]);
-                return 1;
+                found_any = 1;
+                // Don't return here - continue checking all elements
             }
         }
     }
-    return 0;
+    return found_any;
 }
 
 void Backward(u8 c[32], u8 d[32], u8 s[512], u32 p_inv[32]) {
@@ -288,6 +353,9 @@ int solve_challenge() {
     
     // Step 1: Work backwards from target to find the state before final confusion
     u8 pre_final[32];
+    memset(pre_final, 0, sizeof(pre_final));  // Initialize to zeros
+    
+    printf("Attempting to find pre_final values with fixed a=82...\n");
     
     // For each output byte, we need to find the pair that produces it
     for (int i = 0; i < 16; i++) {
@@ -297,21 +365,36 @@ int solve_challenge() {
         // confusion[a] XOR confusion[b + 256] = target_byte
         
         // Try all possible values for the first element (even indices)
-        for (int a = 0; a < 256; a++) {
-            u8 needed_b = target_byte ^ confusion[a];
-            
-            // Find if this value exists in the second half
-            u8 b = inv_confusion2[needed_b];
-            if (confusion[b + 256] == needed_b) {
-                pre_final[i * 2] = a;
-                pre_final[i * 2 + 1] = b;
-                break;
-            }
+
+        int a = 82;
+        u8 needed_b = target_byte ^ confusion[a];
+        
+        // Find if this value exists in the second half
+        u8 b = inv_confusion2[needed_b];
+        if (confusion[b + 256] == needed_b) {
+            pre_final[i * 2] = a;
+            pre_final[i * 2 + 1] = b;
+            printf("Success: Position %d, target=0x%02x, a=%d (0x%02x), b=%d (0x%02x), confusion[%d]=0x%02x, confusion[%d]=0x%02x\n", 
+                   i, target_byte, a, a, b, b, a, confusion[a], b + 256, confusion[b + 256]);
+            break;
+        } else {
+            printf("Warning: For position %d, target byte 0x%02x with a=%d (confusion[%d]=0x%02x), needed_b=0x%02x is not found in confusion[256..511]\n", 
+                   i, target_byte, a, a, confusion[a], needed_b);
+            // Leave pre_final as zeros for this position
         }
     }
     
+    // Print the resulting pre_final array
+    printf("\nResulting pre_final array:\n");
+    printf("  Hex: ");
+    for (int i = 0; i < 32; i++) {
+        printf("%02x ", pre_final[i]);
+        if ((i + 1) % 16 == 0) printf("\n       ");
+    }
+    printf("\n");
+    
     // Test that compression using the formula produces the target
-    printf("Testing compression formula:\n");
+    printf("\nTesting compression formula:\n");
     u8 test_compression[16];
     u8* s = confusion;  // s is the confusion array
     u8* c = pre_final;  // c is our pre_final array

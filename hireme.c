@@ -367,6 +367,7 @@ int solve_challenge() {
         // Try all possible values for the first element (even indices)
 
         int a = 82;
+        int alt_a = 0;  // Alternative value for a
         u8 needed_b = target_byte ^ confusion[a];
         
         // Find if this value exists in the second half
@@ -376,11 +377,26 @@ int solve_challenge() {
             pre_final[i * 2 + 1] = b;
             printf("Success: Position %d, target=0x%02x, a=%d (0x%02x), b=%d (0x%02x), confusion[%d]=0x%02x, confusion[%d]=0x%02x\n", 
                    i, target_byte, a, a, b, b, a, confusion[a], b + 256, confusion[b + 256]);
-            break;
         } else {
             printf("Warning: For position %d, target byte 0x%02x with a=%d (confusion[%d]=0x%02x), needed_b=0x%02x is not found in confusion[256..511]\n", 
                    i, target_byte, a, a, confusion[a], needed_b);
-            // Leave pre_final as zeros for this position
+            
+            // Try alternative value
+            printf("Trying alternative a=%d...\n", alt_a);
+            needed_b = target_byte ^ confusion[alt_a];
+            b = inv_confusion2[needed_b];
+            
+            if (confusion[b + 256] == needed_b) {
+                pre_final[i * 2] = alt_a;
+                pre_final[i * 2 + 1] = b;
+                printf("Success with alternative: Position %d, target=0x%02x, a=%d (0x%02x), b=%d (0x%02x), confusion[%d]=0x%02x, confusion[%d]=0x%02x\n", 
+                       i, target_byte, alt_a, alt_a, b, b, alt_a, confusion[alt_a], b + 256, confusion[b + 256]);
+            } else {
+                printf("Alternative also failed: needed_b=0x%02x is not found in confusion[256..511]\n", needed_b);
+                // Set default values
+                pre_final[i * 2] = alt_a;
+                pre_final[i * 2 + 1] = 0;
+            }
         }
     }
     

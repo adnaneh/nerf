@@ -117,6 +117,8 @@ static int invert32(const u32 A[32], u32 Ainv[32])
 static u8  inv_low[256];       // 0 = “forbidden”, else any pre‑image
 static u32 invM   [32];
 
+// TODO: instead of keeping the first seen, we could keep all pre‑images, and we should have a special value for “impossible”: no pre-image.
+// Also, do the same thing for inv_high
 static void precompute(void)
 {
     // ----  S_low⁻¹  ---------------------------------------------------------
@@ -147,6 +149,7 @@ static void build_final_state(u8 c[32])
     const u8 *Shi = confusion + 256;
 
     // Pre‑compute, for every (char position, even byte) the unique odd byte.
+    // TODO: Use inv_high instead and use the special impossible value instead of -1
     u8 odd_of[16][256];
     for (int pos = 0; pos < 16; ++pos)
         for (int ev = 0; ev < 256; ++ev) {
@@ -159,7 +162,10 @@ static void build_final_state(u8 c[32])
 
     // Greedy scan – for every position choose the *first* even byte such that
     // the resulting full 32‑byte vector passes the “forbidden” test.
-
+    // TODO: Instead of this, here is how I imagine the algo:
+    // 1. For each position from 0 to <16, find an even byte, by taking a random value for ev
+    // 2. For each even byte, compute the odd byte that would make the target[i] match, use inv_high, if it's an impossible value, skip it and try another random value
+    // Finally you want to check that multipling by invM doesn't give any forbidden value for inv_low, and if it does, change a value at a random position to a random one, update the odd byte and if it's not impossible, try multiplying by invM again.
     u8 v[32];
     for (int pos = 0; pos < 16; ++pos) {
         for (int ev = 0; ev < 256; ++ev) {

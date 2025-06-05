@@ -195,7 +195,7 @@ static void build_final_state(u8 c[32])
 static void inverse_256_rounds(u8 c[32])
 {
     u8 v[32], p[32];
-
+    // TODO: amongst the possible pre-images, find the one that will give a valid M-1.c ie that has no impossible value for inv_low
     for (int round = 0; round < 256; ++round) {
         for (int j = 0; j < 32; ++j) {
             v[j] = dot_row(invM[j], c);

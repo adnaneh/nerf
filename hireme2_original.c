@@ -24,8 +24,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <time.h>
-#include <assert.h>
 
 // -----------------------------------------------------------------------------
 //  Original tables copied verbatim from the crack‑me
@@ -116,28 +114,16 @@ static int invert32(const u32 A[32], u32 Ainv[32])
 //  Build   • S_low⁻¹  (first pre‑image)   •   M⁻¹   as u32[32]
 // -----------------------------------------------------------------------------
 
-// Store all possible pre-images for each value
-static u8  inv_low[256][256];  // inv_low[y][i] = i-th pre-image of y
-static u8  inv_low_count[256]; // Number of pre-images for each y       // 0 = “forbidden”, else any pre‑image
-static u8  inv_high[256][256]; // inv_high[y][i] = i-th pre-image of y  
-static u8  inv_high_count[256]; // Number of pre-images for each y
+static u8  inv_low[256];       // 0 = “forbidden”, else any pre‑image
 static u32 invM   [32];
 
-// TODO: instead of keeping the first seen, we could keep all pre‑images, and we should have a special value for “impossible”: no pre-image.
-// Also, do the same thing for inv_high
 static void precompute(void)
 {
     // ----  S_low⁻¹  ---------------------------------------------------------
-    for (int b = 0; b < 256; ++b) inv_low_count[b] = 0;       // 0  ⇒  ‘no pre‑image’
+    for (int b = 0; b < 256; ++b) inv_low[b] = 0;       // 0  ⇒  ‘no pre‑image’
     for (int x = 0; x < 256; ++x) {
         u8 y = confusion[x];
-        inv_low[y][inv_low_count[y]++] = (u8)x;         // keep all pre-images
-    }
-    // ----  S_high⁻¹  --------------------------------------------------------
-    for (int b = 0; b < 256; ++b) inv_high_count[b] = 0;      // 0  ⇒  'no pre‑image'
-    for (int x = 0; x < 256; ++x) {
-        u8 y = confusion[x + 256];
-        inv_high[y][inv_high_count[y]++] = (u8)x;       // keep all pre-images
+        if (!inv_low[y]) inv_low[y] = (u8)x;            // keep first seen
     }
     // ----  M⁻¹  -------------------------------------------------------------
     if (invert32(diffusion, invM)) {
@@ -155,113 +141,44 @@ static void precompute(void)
 
 static const u8 target[16] = "Hire me!!!!!!!!";   // 15 chars + \0 terminator
 
-// Forward declaration
-static int inverse_256_rounds_with_choices(u8 c[32], int choice_indices[256][32]);
-
 static void build_final_state(u8 c[32])
 {
     const u8 *Slo = confusion;
     const u8 *Shi = confusion + 256;
 
     // Pre‑compute, for every (char position, even byte) the unique odd byte.
-    u8 odd_of[16][256];       // Only store valid odd bytes
-    u8 is_possible[16][256];  // Track which combinations are possible
-    int impossible_count = 0;
+    u8 odd_of[16][256];
     for (int pos = 0; pos < 16; ++pos)
         for (int ev = 0; ev < 256; ++ev) {
             u8 need = Slo[ev] ^ target[pos];
-            if (inv_high_count[need] > 0) {
-                odd_of[pos][ev] = inv_high[need][0];
-                is_possible[pos][ev] = 1;
-            } else {
-                odd_of[pos][ev] = 0;  // Dummy value, will be ignored
-                is_possible[pos][ev] = 0;
-                impossible_count++;
-            }
+            int  od  = -1;
+            for (int t = 0; t < 256 && od < 0; ++t)
+                if (Shi[t] == need) od = t;
+            odd_of[pos][ev] = (u8)od;          // 255 ⇒ impossible – never happens
         }
-    // printf("DEBUG: %d impossible combinations out of %d total\n", impossible_count, 16*256);
 
     // Greedy scan – for every position choose the *first* even byte such that
     // the resulting full 32‑byte vector passes the “forbidden” test.
-    // TODO: Instead of this, here is how I imagine the algo:
-    // 1. For each position from 0 to <16, find an even byte, by taking a random value for ev
-    // 2. For each even byte, compute the odd byte that would make the target[i] match, use inv_high, if it's an impossible value, skip it and try another random value
-    // 3. Finally you want to check that multipling by invM doesn't give any forbidden value for inv_low, and if it does, change a value at a random position to a random one, update the odd byte and if it's not impossible, try multiplying by invM again.
+
     u8 v[32];
-    
-    // Implement the algorithm described in the TODO comment
-    int max_attempts = 1000000;
-    
-    for (int attempt = 0; attempt < max_attempts; ++attempt) {
-        // Step 1 & 2: For each position, find a random even byte with valid odd byte
-        int valid_state = 1;
-        for (int pos = 0; pos < 16 && valid_state; ++pos) {
-            int found = 0;
-            for (int tries = 0; tries < 256; ++tries) {
-                int ev = rand() % 256;  // Step 1: random even byte
-                
-                // Step 2: compute odd byte and check if possible
-                if (is_possible[pos][ev]) {
-                    u8 od = odd_of[pos][ev];
-                    c[2*pos    ] = (u8)ev;
-                    c[2*pos + 1] = od;
-                    found = 1;
-                    break;
-                }
-            }
-            
-            if (!found) {
-                valid_state = 0;  // No valid combination found for this position
-            }
-        }
-        
-        if (!valid_state) continue;  // Try again
-        
-        // Step 3: Check if multiplying by invM gives forbidden values
-        int all_valid = 1;
-        for (int j = 0; j < 32; ++j) {
-            v[j] = dot_row(invM[j], c);
-            if (inv_low_count[v[j]] == 0) {
-                all_valid = 0;
-                break;
-            }
-        }
-        
-        if (all_valid) {
-            fprintf(stderr, "[INFO] Found valid final state after %d attempts\n", attempt + 1);
-            return;  // Success!
-        }
-        
-        // Step 3 continued: If invalid, try changing random positions
-        for (int fix_attempts = 0; fix_attempts < 10; ++fix_attempts) {
-            int pos = rand() % 16;  // Random position to change
-            int ev = rand() % 256;  // Random new even byte
-            
-            if (is_possible[pos][ev]) {
-                u8 od = odd_of[pos][ev];
-                c[2*pos    ] = (u8)ev;
-                c[2*pos + 1] = od;
-                
-                // Check if this fixes the invM issue
-                all_valid = 1;
+    for (int pos = 0; pos < 16; ++pos) {
+        for (int ev = 0; ev < 256; ++ev) {
+            int od = odd_of[pos][ev];
+            c[2*pos    ] = (u8)ev;
+            c[2*pos + 1] = (u8)od;
+
+            // Once the block is fully filled, check M⁻¹·c.
+            if (pos == 15) {
                 for (int j = 0; j < 32; ++j) {
                     v[j] = dot_row(invM[j], c);
-                    if (inv_low_count[v[j]] == 0) {
-                        all_valid = 0;
-                        break;
-                    }
+                    if (!inv_low[v[j]]) goto bad;      // forbidden value
                 }
-                
-                if (all_valid) {
-                    fprintf(stderr, "[INFO] Fixed invalid state after %d attempts + %d fixes\n", 
-                           attempt + 1, fix_attempts + 1);
-                    return;  // Success!
-                }
+                return;             // success!
             }
         }
+  bad: ;
     }
-    
-    fprintf(stderr, "[FATAL] could not build a legal end‑state after %d attempts\n", max_attempts);
+    fprintf(stderr, "[FATAL] could not build a legal end‑state (should not happen)\n");
     exit(EXIT_FAILURE);
 }
 
@@ -269,25 +186,18 @@ static void build_final_state(u8 c[32])
 //  Stage 2 – walk 256 rounds backwards :   cₙ₊₁  →  cₙ
 // -----------------------------------------------------------------------------
 
-static int inverse_256_rounds_with_choices(u8 c[32], int choice_indices[256][32])
+static void inverse_256_rounds(u8 c[32])
 {
     u8 v[32], p[32];
-    // Walk backwards through 256 rounds
-    // TODO: I want this to be kind of a BFS where you explore all possible choices for each round
+
     for (int round = 0; round < 256; ++round) {
-        // Compute M⁻¹·c
         for (int j = 0; j < 32; ++j) {
             v[j] = dot_row(invM[j], c);
-            if (inv_low_count[v[j]] == 0) return 0;  // impossible
+            p[j] = inv_low[v[j]];                 // guaranteed non‑zero
         }
-        
-        int found_valid = 0;
-                
         memcpy(c, p, 32);
     }
-    return 1;  // success
 }
-
 
 // -----------------------------------------------------------------------------
 //  Check – run the **original** Forward() just to prove it works
@@ -315,7 +225,6 @@ static void Forward(const u8 in[32], u8 out[32])
 
 int main(void)
 {
-    srand(time(NULL));  // Initialize random number generator
     precompute();
 
     u8 c256[32];
@@ -323,38 +232,18 @@ int main(void)
 
     u8 input[32];
     memcpy(input, c256, 32);
-    // Try multiple choice combinations for inverse rounds  
-    int found_solution = 0;
-    for (int attempt = 0; attempt < 10000 && !found_solution; ++attempt) {
-        memcpy(input, c256, 32);  // reset to final state
-        
-        // Generate random choice indices
-        int choice_indices[256][32];
-        for (int round = 0; round < 256; ++round) {
-            for (int j = 0; j < 32; ++j) {
-                choice_indices[round][j] = rand() % 256;
-            }
-        }
-        
-        if (inverse_256_rounds_with_choices(input, choice_indices)) {
-            // Test if this works
-            u8 test_out[32] = {0};
-            Forward(input, test_out);
-            if (!memcmp(test_out, target, 16)) {
-                printf("✓ cracked! 32‑byte input (attempt %d):\n    ", attempt + 1);
-                for (int i = 0; i < 32; ++i) printf("%02x", input[i]);
-                puts("");
-                return 0;
-            }
-        }
-    }
-    
-    if (!found_solution) {
-        fprintf(stderr, "[BUG] could not find working input after trying multiple combinations\n");
-        return 1;
-    }          // now  ‘input’ is a valid key
+    inverse_256_rounds(input);          // now  ‘input’ is a valid key
 
-    
-    // This should not be reached
-    return 0;
+    // ----  prove it  ----
+    u8 out[32] = {0};
+    Forward(input, out);
+
+    if (!memcmp(out, target, 16)) {
+        printf("✓ cracked! 32‑byte input :\n    ");
+        for (int i = 0; i < 32; ++i) printf("%02x", input[i]);
+        puts("");
+        return 0;
+    }
+    fprintf(stderr, "[BUG] generated input did not validate?!\n");
+    return 1;
 }

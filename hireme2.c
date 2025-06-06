@@ -513,17 +513,25 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
     }
     time_combination_calc += get_time_ms() - start_combo;
     
-    // Structure to store state and its future combination count
-    typedef struct {
-        u8 state[32];
-        int combo_idx;
-        int future_combinations;
-    } StateInfo;
+    // Generate array of combination indices and shuffle for better pruning
+    int *combo_order = malloc(total_combinations * sizeof(int));
+    for (int i = 0; i < total_combinations; ++i) {
+        combo_order[i] = i;
+    }
     
-    StateInfo *state_infos = malloc(total_combinations * sizeof(StateInfo));
+    // Simple shuffle
+    for (int i = total_combinations - 1; i > 0; --i) {
+        int j = rand() % (i + 1);
+        int temp = combo_order[i];
+        combo_order[i] = combo_order[j];
+        combo_order[j] = temp;
+    }
     
-    // First pass: generate all states and calculate their future combination counts
-    for (int combo = 0; combo < total_combinations; ++combo) {
+    // Generate and explore combinations in shuffled order
+    for (int combo_idx = 0; combo_idx < total_combinations; ++combo_idx) {
+        int combo = combo_order[combo_idx];
+        // TIMING: Generate new state
+        double start_state = get_time_ms();
         u8 new_state[32];
         int temp_combo = combo;
         
@@ -533,60 +541,6 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
             temp_combo /= choices_per_pos[j];
             new_state[j] = inv_low[v[j]][choice_idx];
         }
-        
-        // Calculate future combinations for this state
-        u8 future_v[32];
-        int future_valid = 1;
-        int future_total = 1;
-        
-        // Check what combinations this state would have in the next round
-        for (int j = 0; j < 32; ++j) {
-            future_v[j] = dot_row(invM[j], new_state);
-            if (inv_low_count[future_v[j]] == 0) {
-                future_valid = 0;
-                break;
-            }
-            future_total *= inv_low_count[future_v[j]];
-            if (future_total > 1000000) {  // Cap to prevent overflow
-                future_total = 1000000;
-                break;
-            }
-        }
-        
-        memcpy(state_infos[combo].state, new_state, 32);
-        state_infos[combo].combo_idx = combo;
-        state_infos[combo].future_combinations = future_valid ? future_total : 1000000;  // Invalid states get highest value
-    }
-    
-    // Sort states by future combination count - strategy depends on round
-    // First 100 rounds: least combinations first (more constrained)
-    // Later rounds: most combinations first (more exploration)
-    int use_least_first = (round < 100);
-    
-    for (int i = 0; i < total_combinations - 1; ++i) {
-        for (int j = i + 1; j < total_combinations; ++j) {
-            int should_swap;
-            if (use_least_first) {
-                // Least combinations first (ascending)
-                should_swap = (state_infos[j].future_combinations < state_infos[i].future_combinations);
-            } else {
-                // Most combinations first (descending)
-                should_swap = (state_infos[j].future_combinations > state_infos[i].future_combinations);
-            }
-            
-            if (should_swap) {
-                StateInfo temp = state_infos[i];
-                state_infos[i] = state_infos[j];
-                state_infos[j] = temp;
-            }
-        }
-    }
-    
-    // Process states in optimal order (least first for early rounds, most first for later rounds)
-    for (int state_idx = 0; state_idx < total_combinations; ++state_idx) {
-        // TIMING: Use pre-generated state
-        double start_state = get_time_ms();
-        u8 *new_state = state_infos[state_idx].state;
         time_state_generation += get_time_ms() - start_state;
         
         // TIMING: Recursive call
@@ -595,12 +549,12 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
         time_recursive_calls += get_time_ms() - start_recursive;
         
         if (result) {
-            free(state_infos);
+            free(combo_order);
             return 1; // Solution found, propagate up
         }
     }
     
-    free(state_infos);
+    free(combo_order);
     return 0; // No solution found in this branch
 }
 

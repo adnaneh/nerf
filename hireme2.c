@@ -460,12 +460,22 @@ static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u
 //  DFS approach - recursive depth-first search (finds first solution only)
 // -----------------------------------------------------------------------------
 
+// Enable/disable profiling
+#define PROFILE_ENABLED 1
+
 // Timing counters for profiling
 static double time_matrix_computation = 0.0;
 static double time_combination_calc = 0.0;
 static double time_state_generation = 0.0;
 static double time_recursive_calls = 0.0;
 static int call_count = 0;
+
+// Pre-allocated buffers to avoid malloc in recursion
+static u8 preallocated_state[256][32];  // One buffer per recursion depth
+static int recursion_depth = 0;
+
+// Maximum combinations before early exit
+#define MAX_COMBO_LIMIT 1000000
 
 static int dfs_recursive(u8 state[32], int round, u8 solution[32])
 {
@@ -480,7 +490,9 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
     u8 v[32];
     
     // TIMING: Compute M⁻¹·state for current state
+#if PROFILE_ENABLED
     double start_matrix = get_time_ms();
+#endif
     int valid_state = 1;
     for (int j = 0; j < 32; ++j) {
         v[j] = dot_row(invM[j], state);
@@ -489,41 +501,46 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
             break;
         }
     }
+#if PROFILE_ENABLED
     time_matrix_computation += get_time_ms() - start_matrix;
+#endif
     
     if (!valid_state) return 0;
     
     // TIMING: Calculate combinations
+#if PROFILE_ENABLED
     double start_combo = get_time_ms();
+#endif
     int choices_per_pos[32];
-    int total_combinations = 1;
-    // Adaptive branching factor based on round
+    long long total_combinations = 1;
+    
     for (int j = 0; j < 32; ++j) {
         choices_per_pos[j] = inv_low_count[v[j]];
         total_combinations *= choices_per_pos[j];
+        // Early exit if combinations become too large
+        if (total_combinations > MAX_COMBO_LIMIT) {
+            return 0;
+        }
     }
+#if PROFILE_ENABLED
     time_combination_calc += get_time_ms() - start_combo;
+#endif
     
-    // Generate array of combination indices and shuffle for better pruning
-    int *combo_order = malloc(total_combinations * sizeof(int));
-    for (int i = 0; i < total_combinations; ++i) {
-        combo_order[i] = i;
-    }
+    // Use preallocated buffer instead of malloc
+    u8 *new_state = preallocated_state[recursion_depth];
+    recursion_depth++;
     
-    // Simple shuffle
-    for (int i = total_combinations - 1; i > 0; --i) {
-        int j = rand() % (i + 1);
-        int temp = combo_order[i];
-        combo_order[i] = combo_order[j];
-        combo_order[j] = temp;
-    }
+    // Generate combinations iteratively without malloc/shuffle
+    // Use a simple counter approach with pseudo-random ordering
+    int combo_start = rand() % (int)total_combinations;
     
-    // Generate and explore combinations in shuffled order
-    for (int combo_idx = 0; combo_idx < total_combinations; ++combo_idx) {
-        int combo = combo_order[combo_idx];
+    for (int combo_offset = 0; combo_offset < total_combinations; ++combo_offset) {
+        int combo = (combo_start + combo_offset) % (int)total_combinations;
+        
         // TIMING: Generate new state
+#if PROFILE_ENABLED
         double start_state = get_time_ms();
-        u8 new_state[32];
+#endif
         int temp_combo = combo;
         
         // Convert combo index to specific choices for each position
@@ -532,20 +549,26 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
             temp_combo /= choices_per_pos[j];
             new_state[j] = inv_low[v[j]][choice_idx];
         }
+#if PROFILE_ENABLED
         time_state_generation += get_time_ms() - start_state;
+#endif
         
         // TIMING: Recursive call
+#if PROFILE_ENABLED
         double start_recursive = get_time_ms();
+#endif
         int result = dfs_recursive(new_state, round + 1, solution);
+#if PROFILE_ENABLED
         time_recursive_calls += get_time_ms() - start_recursive;
+#endif
         
         if (result) {
-            free(combo_order);
+            recursion_depth--;
             return 1; // Solution found, propagate up
         }
     }
     
-    free(combo_order);
+    recursion_depth--;
     return 0; // No solution found in this branch
 }
 
@@ -575,6 +598,7 @@ static void print_dfs_profile(void)
 static int inverse_256_rounds_dfs(u8 solution[32], const u8 initial_state[32])
 {
     reset_dfs_timers();
+    recursion_depth = 0;  // Reset recursion depth
     return dfs_recursive((u8*)initial_state, 0, solution);
 }
 

@@ -352,6 +352,7 @@ typedef struct {
     u8 state[32];
 } StateNode;
 
+
 static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32])
 {
     // BFS queue implementation using dynamic arrays
@@ -496,18 +497,39 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
     double start_combo = get_time_ms();
     int choices_per_pos[32];
     int total_combinations = 1;
+    // Adaptive branching factor based on round
+    int max_combinations;
+    if (round > 240) max_combinations = 100;      // Very late rounds - aggressive pruning
+    else if (round > 200) max_combinations = 500;  // Late rounds - moderate pruning  
+    else if (round > 100) max_combinations = 1000; // Mid rounds - light pruning
+    else max_combinations = 1000;                   // Early rounds - full exploration
     for (int j = 0; j < 32; ++j) {
         choices_per_pos[j] = inv_low_count[v[j]];
         total_combinations *= choices_per_pos[j];
-        if (total_combinations > 50000) {
-            total_combinations = 50000;
+        if (total_combinations > max_combinations) {
+            total_combinations = max_combinations;
             break;
         }
     }
     time_combination_calc += get_time_ms() - start_combo;
     
-    // Generate and explore combinations one by one
-    for (int combo = 0; combo < total_combinations; ++combo) {
+    // Generate array of combination indices and shuffle for better pruning
+    int *combo_order = malloc(total_combinations * sizeof(int));
+    for (int i = 0; i < total_combinations; ++i) {
+        combo_order[i] = i;
+    }
+    
+    // Simple shuffle
+    for (int i = total_combinations - 1; i > 0; --i) {
+        int j = rand() % (i + 1);
+        int temp = combo_order[i];
+        combo_order[i] = combo_order[j];
+        combo_order[j] = temp;
+    }
+    
+    // Generate and explore combinations in shuffled order
+    for (int combo_idx = 0; combo_idx < total_combinations; ++combo_idx) {
+        int combo = combo_order[combo_idx];
         // TIMING: Generate new state
         double start_state = get_time_ms();
         u8 new_state[32];
@@ -527,10 +549,12 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
         time_recursive_calls += get_time_ms() - start_recursive;
         
         if (result) {
+            free(combo_order);
             return 1; // Solution found, propagate up
         }
     }
     
+    free(combo_order);
     return 0; // No solution found in this branch
 }
 

@@ -498,18 +498,9 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
     int choices_per_pos[32];
     int total_combinations = 1;
     // Adaptive branching factor based on round
-    int max_combinations;
-    if (round > 240) max_combinations = 100;      // Very late rounds - aggressive pruning
-    else if (round > 200) max_combinations = 500;  // Late rounds - moderate pruning  
-    else if (round > 100) max_combinations = 1000; // Mid rounds - light pruning
-    else max_combinations = 1000;                   // Early rounds - full exploration
     for (int j = 0; j < 32; ++j) {
         choices_per_pos[j] = inv_low_count[v[j]];
         total_combinations *= choices_per_pos[j];
-        if (total_combinations > max_combinations) {
-            total_combinations = max_combinations;
-            break;
-        }
     }
     time_combination_calc += get_time_ms() - start_combo;
     

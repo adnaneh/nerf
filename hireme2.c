@@ -184,7 +184,7 @@ static void precompute(void)
 
 // Forward declarations
 static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32]);
-static int inverse_256_rounds_dfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32]);
+static int inverse_256_rounds_dfs(u8 solution[32], const u8 initial_state[32]);
 
 static void build_final_state(u8 c[32])
 {
@@ -372,23 +372,14 @@ static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u
 }
 
 // -----------------------------------------------------------------------------
-//  DFS approach - recursive depth-first search
+//  DFS approach - recursive depth-first search (finds first solution only)
 // -----------------------------------------------------------------------------
 
-static int dfs_solutions_found = 0;
-static u8 (*dfs_solutions_array)[32] = NULL;
-static int dfs_max_solutions = 0;
-
-static int dfs_recursive(u8 state[32], int round)
+static int dfs_recursive(u8 state[32], int round, u8 solution[32])
 {
-    if (dfs_solutions_found >= dfs_max_solutions) {
-        return 1; // Found enough solutions
-    }
-    
     if (round == 256) {
         // Reached the beginning - this is a valid solution
-        memcpy(dfs_solutions_array[dfs_solutions_found], state, 32);
-        dfs_solutions_found++;
+        memcpy(solution, state, 32);
         return 1; // Signal that we found a solution
     }
     
@@ -419,7 +410,7 @@ static int dfs_recursive(u8 state[32], int round)
     }
     
     // Generate combinations systematically
-    for (int combo = 0; combo < total_combinations && dfs_solutions_found < dfs_max_solutions; ++combo) {
+    for (int combo = 0; combo < total_combinations; ++combo) {
         u8 new_state[32];
         int temp_combo = combo;
         
@@ -430,7 +421,7 @@ static int dfs_recursive(u8 state[32], int round)
             new_state[j] = inv_low[v[j]][choice_idx];
         }
         
-        if (dfs_recursive(new_state, round + 1)) {
+        if (dfs_recursive(new_state, round + 1, solution)) {
             return 1; // Solution found, propagate up
         }
     }
@@ -438,18 +429,9 @@ static int dfs_recursive(u8 state[32], int round)
     return 0; // No solution found in this branch
 }
 
-static int inverse_256_rounds_dfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32])
+static int inverse_256_rounds_dfs(u8 solution[32], const u8 initial_state[32])
 {
-    dfs_solutions_found = 0;
-    dfs_solutions_array = solutions;
-    dfs_max_solutions = max_solutions;
-    
-    u8 start_state[32];
-    memcpy(start_state, initial_state, 32);
-    
-    dfs_recursive(start_state, 0);
-    
-    return dfs_solutions_found;
+    return dfs_recursive((u8*)initial_state, 0, solution);
 }
 
 // -----------------------------------------------------------------------------
@@ -501,11 +483,11 @@ int main(void)
         double bfs_time = get_time_ms() - bfs_start;
         
         double dfs_start = get_time_ms();
-        u8 dfs_solutions[1][32];  // Store only 1 solution for DFS (first found)
-        int dfs_num_solutions = inverse_256_rounds_dfs(dfs_solutions, 1, c256);
+        u8 dfs_solution[32];  // Store only 1 solution for DFS (first found)
+        int dfs_found = inverse_256_rounds_dfs(dfs_solution, c256);
         double dfs_time = get_time_ms() - dfs_start;
         
-        if (bfs_num_solutions > 0 || dfs_num_solutions > 0) {
+        if (bfs_num_solutions > 0 || dfs_found) {
             double total_time = get_time_ms() - start_time;
             
             // Verify BFS solutions without printing
@@ -518,20 +500,20 @@ int main(void)
                 }
             }
             
-            // Verify DFS solutions without printing
-            int dfs_valid_count = 0;
-            for (int i = 0; i < dfs_num_solutions; ++i) {
+            // Verify DFS solution without printing
+            int dfs_valid = 0;
+            if (dfs_found) {
                 u8 test_out[32] = {0};
-                Forward(dfs_solutions[i], test_out);
+                Forward(dfs_solution, test_out);
                 if (!memcmp(test_out, target, 16)) {
-                    dfs_valid_count++;
+                    dfs_valid = 1;
                 }
             }
             
-            if (bfs_valid_count > 0 || dfs_valid_count > 0) {
+            if (bfs_valid_count > 0 || dfs_valid) {
                 printf("[SUCCESS] After %d attempts:\n", attempt + 1);
                 printf("  BFS: Found %d valid solutions (out of %d) in %.2f ms\n", bfs_valid_count, bfs_num_solutions, bfs_time);
-                printf("  DFS: Found %d valid solutions (out of %d) in %.2f ms\n", dfs_valid_count, dfs_num_solutions, dfs_time);
+                printf("  DFS: Found %d valid solution in %.2f ms\n", dfs_valid, dfs_time);
                 printf("  Total: %.2f ms\n", total_time);
                 return 0;
             } else {

@@ -53,12 +53,12 @@ clean:
 	rm -f *.gcda *.gcno *.profraw *.profdata
 
 # Test performance comparison
-benchmark: $(TARGET) profile pgo
+BENCH_ITERATIONS ?= 1000
+benchmark: $(TARGET) profile
 	@echo "=== Performance Benchmark ==="
-	@echo "Fast build (no profiling):"
-	@time ./$(TARGET) > /dev/null
+	@echo "Running $(BENCH_ITERATIONS) iterations each..."
 	@echo ""
-	@echo "PGO-optimized build:"
-	@time ./$(TARGET)_pgo > /dev/null
+	@printf "Fast build (no profiling): "
+	@python3 -c "import subprocess, time; n=$(BENCH_ITERATIONS); start = time.time(); [subprocess.run(['./$(TARGET)'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for _ in range(n)]; elapsed = time.time() - start; total_ms = elapsed * 1000; avg_ms = total_ms / n; print(f'{total_ms:.2f} ms total, {avg_ms:.2f} ms per iteration')"
 
 .PHONY: profile pgo-gen pgo-use pgo clean benchmark

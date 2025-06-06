@@ -8,8 +8,7 @@
 //  - Profile build provides detailed performance breakdown
 //
 //  OPTIMIZATION 2: Fuse the two passes over j=0..31
-//  - Single pass computes v[j], checks validity, calculates choices, and log_sum
-//  - Early exit on first invalid state or when log_sum > LOG_MAX
+//  - Single pass computes v[j], checks validity, calculates choices
 //  - Eliminates redundant cache misses and branch mispredictions
 //
 //  OPTIMIZATION 3: Vectorize dot_row_optimized
@@ -194,11 +193,6 @@ static u32 invM[32] __attribute__((aligned(32)));
 static u8  odd_of[16][256] __attribute__((aligned(64)));
 static u8  is_possible[16][256] __attribute__((aligned(64)));
 
-// Pre-computed log2 table for early-exit pruning
-static double log2_table[257] __attribute__((aligned(64)));  // log2_table[i] = log2(i) for i=1..256, log2_table[0] = -INFINITY
-
-// OPTIMIZATION 2: Early exit threshold
-static const double LOG_MAX = 50.0;  // Reasonable pruning threshold
 
 static const u8 target[16] = "Hire me!!!!!!!!";
 
@@ -234,19 +228,12 @@ static void precompute(void)
             }
         }
     }
-    
-    // OPTIMIZATION 4: Pre-compute log2 table
-    log2_table[0] = -INFINITY;  // log2(0) is undefined, but we use this as a sentinel
-    for (int i = 1; i <= 256; ++i) {
-        log2_table[i] = log2((double)i);
-    }
 }
 
 // -----------------------------------------------------------------------------
 //  OPTIMIZATION 5: Explicit stack DFS (removes recursion overhead)
 //  OPTIMIZATION 1: Mixed-radix counter (removes per-node division/modulo)
 //  OPTIMIZATION 2: Counting sort for ordering
-//  OPTIMIZATION 4: Early-exit pruning using log-space
 // -----------------------------------------------------------------------------
 
 typedef struct {
@@ -320,7 +307,6 @@ static int dfs_recursive_optimized(u8 state[32], int round, u8 solution[32], u32
 #endif
     
     // OPTIMIZATION 2: Fused single pass with early exit
-    double log_sum = 0.0;
     int valid_state = 1;
     
     for (int j = 0; j < 32; ++j) {
@@ -330,8 +316,6 @@ static int dfs_recursive_optimized(u8 state[32], int round, u8 solution[32], u32
         if (!c) { valid_state = 0; break; }
         
         choices_per_pos[j] = c;
-        log_sum += log2_table[c];
-        if (log_sum > LOG_MAX) { valid_state = 0; break; }
     }
     
 #ifdef PROFILE

@@ -375,8 +375,17 @@ static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u
 //  DFS approach - recursive depth-first search (finds first solution only)
 // -----------------------------------------------------------------------------
 
+// Timing counters for profiling
+static double time_matrix_computation = 0.0;
+static double time_combination_calc = 0.0;
+static double time_state_generation = 0.0;
+static double time_recursive_calls = 0.0;
+static int call_count = 0;
+
 static int dfs_recursive(u8 state[32], int round, u8 solution[32])
 {
+    call_count++;
+    
     if (round == 256) {
         // Reached the beginning - this is a valid solution
         memcpy(solution, state, 32);
@@ -385,7 +394,8 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
     
     u8 v[32];
     
-    // Compute M⁻¹·state for current state
+    // TIMING: Compute M⁻¹·state for current state
+    double start_matrix = get_time_ms();
     int valid_state = 1;
     for (int j = 0; j < 32; ++j) {
         v[j] = dot_row(invM[j], state);
@@ -394,23 +404,28 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
             break;
         }
     }
+    time_matrix_computation += get_time_ms() - start_matrix;
     
     if (!valid_state) return 0;
     
-    // Generate pre-image combinations
+    // TIMING: Calculate combinations
+    double start_combo = get_time_ms();
     int choices_per_pos[32];
     int total_combinations = 1;
     for (int j = 0; j < 32; ++j) {
         choices_per_pos[j] = inv_low_count[v[j]];
         total_combinations *= choices_per_pos[j];
-        if (total_combinations > 10000) {
-            total_combinations = 10000; // Cap to prevent explosion
+        if (total_combinations > 50000) {
+            total_combinations = 50000;
             break;
         }
     }
+    time_combination_calc += get_time_ms() - start_combo;
     
-    // Generate combinations systematically
+    // Generate and explore combinations one by one
     for (int combo = 0; combo < total_combinations; ++combo) {
+        // TIMING: Generate new state
+        double start_state = get_time_ms();
         u8 new_state[32];
         int temp_combo = combo;
         
@@ -420,8 +435,14 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
             temp_combo /= choices_per_pos[j];
             new_state[j] = inv_low[v[j]][choice_idx];
         }
+        time_state_generation += get_time_ms() - start_state;
         
-        if (dfs_recursive(new_state, round + 1, solution)) {
+        // TIMING: Recursive call
+        double start_recursive = get_time_ms();
+        int result = dfs_recursive(new_state, round + 1, solution);
+        time_recursive_calls += get_time_ms() - start_recursive;
+        
+        if (result) {
             return 1; // Solution found, propagate up
         }
     }
@@ -429,8 +450,32 @@ static int dfs_recursive(u8 state[32], int round, u8 solution[32])
     return 0; // No solution found in this branch
 }
 
+static void reset_dfs_timers(void)
+{
+    time_matrix_computation = 0.0;
+    time_combination_calc = 0.0;
+    time_state_generation = 0.0;
+    time_recursive_calls = 0.0;
+    call_count = 0;
+}
+
+static void print_dfs_profile(void)
+{
+    printf("  DFS Profiling:\n");
+    printf("    Total calls: %d\n", call_count);
+    printf("    Matrix computation: %.2f ms (%.1f%%)\n", time_matrix_computation, 
+           time_matrix_computation / (time_matrix_computation + time_combination_calc + time_state_generation + time_recursive_calls) * 100);
+    printf("    Combination calc: %.2f ms (%.1f%%)\n", time_combination_calc,
+           time_combination_calc / (time_matrix_computation + time_combination_calc + time_state_generation + time_recursive_calls) * 100);
+    printf("    State generation: %.2f ms (%.1f%%)\n", time_state_generation,
+           time_state_generation / (time_matrix_computation + time_combination_calc + time_state_generation + time_recursive_calls) * 100);
+    printf("    Recursive calls: %.2f ms (%.1f%%)\n", time_recursive_calls,
+           time_recursive_calls / (time_matrix_computation + time_combination_calc + time_state_generation + time_recursive_calls) * 100);
+}
+
 static int inverse_256_rounds_dfs(u8 solution[32], const u8 initial_state[32])
 {
+    reset_dfs_timers();
     return dfs_recursive((u8*)initial_state, 0, solution);
 }
 
@@ -514,6 +559,9 @@ int main(void)
                 printf("[SUCCESS] After %d attempts:\n", attempt + 1);
                 printf("  BFS: Found %d valid solutions (out of %d) in %.2f ms\n", bfs_valid_count, bfs_num_solutions, bfs_time);
                 printf("  DFS: Found %d valid solution in %.2f ms\n", dfs_valid, dfs_time);
+                if (dfs_valid) {
+                    print_dfs_profile();
+                }
                 printf("  Total: %.2f ms\n", total_time);
                 return 0;
             } else {

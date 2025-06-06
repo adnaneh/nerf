@@ -1,5 +1,5 @@
 # OPTIMIZATION 8: Compiler flags & PGO
-CC = gcc
+CC = clang
 
 # Architecture-specific SIMD flags
 UNAME_M := $(shell uname -m)
@@ -11,11 +11,12 @@ else
     SIMD_FLAGS =
 endif
 
-CFLAGS_BASE = -O3 -march=native -flto -fno-exceptions -fno-stack-protector -fomit-frame-pointer $(SIMD_FLAGS)
-CFLAGS_FAST = $(CFLAGS_BASE) -DNDEBUG
-CFLAGS_PROFILE = $(CFLAGS_BASE) -DPROFILE -g
-CFLAGS_PGO_GEN = $(CFLAGS_FAST) -fprofile-generate
-CFLAGS_PGO_USE = $(CFLAGS_FAST) -fprofile-use
+CFLAGS_BASE = -O3 -march=native -mtune=native -fno-exceptions -fno-stack-protector -fomit-frame-pointer $(SIMD_FLAGS)
+CFLAGS_LTO = -flto
+CFLAGS_FAST = $(CFLAGS_BASE) $(CFLAGS_LTO) -DNDEBUG -ffast-math -funroll-loops
+CFLAGS_PROFILE = $(CFLAGS_BASE) $(CFLAGS_LTO) -DPROFILE -g
+CFLAGS_PGO_GEN = $(CFLAGS_FAST) -fprofile-instr-generate
+CFLAGS_PGO_USE = $(CFLAGS_FAST) -fprofile-instr-use=default.profdata
 
 TARGET = hireme2_safe_optimized
 SOURCE = hireme2_safe_optimized.c
@@ -39,7 +40,9 @@ pgo-use: $(SOURCE)
 # Complete PGO workflow
 pgo: pgo-gen
 	@echo "Running PGO training..."
-	./$(TARGET)_pgo_gen > /dev/null 2>&1 || true
+	LLVM_PROFILE_FILE="default.profraw" ./$(TARGET)_pgo_gen > /dev/null 2>&1 || true
+	@echo "Converting profile data..."
+	xcrun llvm-profdata merge -output=default.profdata default.profraw
 	@echo "Building optimized binary with PGO..."
 	$(MAKE) pgo-use
 	@echo "PGO-optimized binary: $(TARGET)_pgo"
@@ -47,7 +50,7 @@ pgo: pgo-gen
 # Clean up
 clean:
 	rm -f $(TARGET) $(TARGET)_profile $(TARGET)_pgo_gen $(TARGET)_pgo
-	rm -f *.gcda *.gcno
+	rm -f *.gcda *.gcno *.profraw *.profdata
 
 # Test performance comparison
 benchmark: $(TARGET) profile pgo

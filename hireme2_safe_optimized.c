@@ -103,22 +103,51 @@ static double get_time_ms(void)
 }
 
 // OPTIMIZATION 3: Vectorized dot_row function (architecture-specific)
-static inline u8 dot_row_optimized(u32 row_mask, const u8 state[32])
+__attribute__((always_inline))
+static inline u8 dot_row_optimized(u32 row_mask, const u8 * __restrict state)
 {
 #ifdef __x86_64__
-    // AVX2 version for x86_64
-    // Convert row mask to 32-byte row vector
-    u8 row[32] __attribute__((aligned(32)));
-    for (int i = 0; i < 32; ++i) {
-        row[i] = (row_mask >> i) & 1;
+    // Optimized AVX2 version for x86_64 using vpdpbusd-like operation
+    __m256i state_vec = _mm256_loadu_si256((const __m256i*)state);
+    
+    // Create mask vector more efficiently using parallel bit expand
+    __m256i mask_vec = _mm256_setzero_si256();
+    
+    // Process 8 bits at a time using parallel bit operations
+    for (int i = 0; i < 4; i++) {
+        u8 chunk = (row_mask >> (i * 8)) & 0xFF;
+        __m256i chunk_expanded = _mm256_set1_epi8(chunk);
+        __m256i bit_mask = _mm256_set_epi8(
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01,
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01
+        );
+        __m256i expanded = _mm256_and_si256(chunk_expanded, bit_mask);
+        expanded = _mm256_cmpeq_epi8(expanded, bit_mask);
+        
+        // Insert into correct position
+        __m256i selector = _mm256_set_epi32(
+            i == 3 ? -1 : 0, i == 3 ? -1 : 0, i == 2 ? -1 : 0, i == 2 ? -1 : 0,
+            i == 1 ? -1 : 0, i == 1 ? -1 : 0, i == 0 ? -1 : 0, i == 0 ? -1 : 0
+        );
+        mask_vec = _mm256_blendv_epi8(mask_vec, expanded, selector);
     }
     
-    __m256i r = _mm256_load_si256((const __m256i*)row);
-    __m256i s = _mm256_loadu_si256((const __m256i*)state);
-    __m256i x = _mm256_and_si256(r, s);
+    // AND and compute XOR of all bytes
+    __m256i result = _mm256_and_si256(state_vec, mask_vec);
     
-    u32 mask = _mm256_movemask_epi8(x);
-    return (u8)__builtin_popcount(mask) & 1;
+    // Horizontal XOR reduction
+    __m128i result_low = _mm256_extracti128_si256(result, 0);
+    __m128i result_high = _mm256_extracti128_si256(result, 1);
+    __m128i xor_result = _mm_xor_si128(result_low, result_high);
+    
+    // Continue XOR reduction to single byte
+    xor_result = _mm_xor_si128(xor_result, _mm_shuffle_epi32(xor_result, 0x4E));
+    xor_result = _mm_xor_si128(xor_result, _mm_shuffle_epi32(xor_result, 0xB1));
+    xor_result = _mm_xor_si128(xor_result, _mm_shufflelo_epi16(xor_result, 0xB1));
+    
+    return (u8)_mm_extract_epi8(xor_result, 0) ^ (u8)_mm_extract_epi8(xor_result, 1);
     
 #elif defined(__aarch64__)
     // NEON version for ARM64
@@ -252,7 +281,6 @@ static int sp = 0;
 #ifdef PROFILE
 // Profiling counters
 static double time_matrix_computation = 0.0;
-static double time_combination_calc = 0.0;
 static double time_state_generation = 0.0;
 static int call_count = 0;
 #endif
@@ -282,110 +310,150 @@ static void counting_sort_positions(u8 order[32], const u8 choices_per_pos[32])
     memcpy(order, temp_order, 32);
 }
 
-// OPTIMIZATION 7: Preallocated state buffers with alignment
-static u8 preallocated_state[256][32] __attribute__((aligned(64)));
+// OPTIMIZATION 3: Single 2D array for better cache locality
+static u8 state_buffer[257][32] __attribute__((aligned(64)));
 static int recursion_depth = 0;
 
-static int dfs_recursive_optimized(u8 state[32], int round, u8 solution[32], u32 seed)
-{
-#ifdef PROFILE
-    call_count++;
-#endif
-    
-    if (round == 256) {
-        // Reached the beginning - this is a valid solution
-        memcpy(solution, state, 32);
-        return 1;
-    }
-    
-    u8 v[32];
-    int choices_per_pos[32];
-    
-#ifdef PROFILE
-    // TIMING: Matrix computation and combination calculation fused
-    double start_fused = get_time_ms();
-#endif
-    
-    // OPTIMIZATION 2: Fused single pass with early exit
-    int valid_state = 1;
-    
-    for (int j = 0; j < 32; ++j) {
-        const u8 t = dot_row_optimized(invM[j], state);
-        v[j] = t;
-        const int c = inv_low_count[t];   // 0‥256
-        if (!c) { valid_state = 0; break; }
-        
-        choices_per_pos[j] = c;
-    }
-    
-#ifdef PROFILE
-    double fused_time = get_time_ms() - start_fused;
-    time_matrix_computation += fused_time * 0.6;  // Approximate split
-    time_combination_calc += fused_time * 0.4;
-#endif
-    
-    if (!valid_state) return 0;
-    
-    // Cache inv_low pointers
+// Iterative DFS stack frame
+typedef struct {
+    int round;
+    u8 idx[32];
+    u8 choices_per_pos[32];
     const u8 *choices_ptr[32];
-    for (int j = 0; j < 32; ++j) {
-        choices_ptr[j] = inv_low[v[j]];
-    }
+    u8 v[32];
+    int counter_pos;  // Position in mixed-radix counter for continuation
+} dfs_frame_t;
+
+static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 seed)
+{
+    dfs_frame_t stack[257];
+    int sp = 0;
     
-    // Use preallocated buffer instead of malloc
-    u8 *new_state = preallocated_state[recursion_depth];
-    recursion_depth++;
-    
-    // OPTIMIZATION 1: Mixed-radix counter instead of division/modulo loop
-    u8 idx[32] = {0};
-    
-    while (1) {
 #ifdef PROFILE
-        // TIMING: State generation
-        double start_state = get_time_ms();
+    call_count = 0;
+#endif
+    
+    // Initialize first frame
+    memcpy(state_buffer[0], initial_state, 32);
+    stack[sp].round = 0;
+    memset(stack[sp].idx, 0, 32);
+    stack[sp].counter_pos = 0;
+    sp++;
+    
+    while (sp > 0) {
+        dfs_frame_t *frame = &stack[sp - 1];
+        
+#ifdef PROFILE
+        call_count++;
 #endif
         
-        // Generate new state from current idx[]
-        for (int j = 0; j < 32; ++j) {
-            new_state[j] = choices_ptr[j][idx[j]];
+        if (frame->round == 256) {
+            // Found solution
+            memcpy(solution, state_buffer[sp - 1], 32);
+            return 1;
         }
         
+        // First time processing this frame?
+        if (frame->counter_pos == 0) {
 #ifdef PROFILE
-        time_state_generation += get_time_ms() - start_state;
+            double start_fused = get_time_ms();
 #endif
-        
-        // Recursive call
-        int result = dfs_recursive_optimized(new_state, round + 1, solution, seed);
-        if (result) {
-            recursion_depth--;
-            return 1; // Solution found, propagate up
+            
+            // OPTIMIZATION 2: Fused single pass with early exit
+            int valid_state = 1;
+            
+            for (int j = 0; j < 32; ++j) {
+                const u8 t = dot_row_optimized(invM[j], state_buffer[sp - 1]);
+                frame->v[j] = t;
+                const int c = inv_low_count[t];
+                if (!c) { valid_state = 0; break; }
+                
+                frame->choices_per_pos[j] = c;
+                frame->choices_ptr[j] = inv_low[t];
+            }
+            
+#ifdef PROFILE
+            double fused_time = get_time_ms() - start_fused;
+            time_matrix_computation += fused_time;
+#endif
+            
+            if (!valid_state) {
+                sp--; // Pop invalid frame
+                continue;
+            }
         }
         
-        // Increment mixed-radix counter
+        // Try to generate next state with current idx
+        if (frame->counter_pos == 0) {
+#ifdef PROFILE
+            double start_state = get_time_ms();
+#endif
+            
+            // Generate new state from current idx[] - unrolled with uint64_t
+            u8 *new_state = state_buffer[sp];
+            for (int j = 0; j < 32; j += 8) {
+                if (j + 7 < 32) {
+                    uint64_t* dest64 = (uint64_t*)(new_state + j);
+                    *dest64 = 
+                        ((uint64_t)frame->choices_ptr[j][frame->idx[j]]) |
+                        ((uint64_t)frame->choices_ptr[j+1][frame->idx[j+1]] << 8) |
+                        ((uint64_t)frame->choices_ptr[j+2][frame->idx[j+2]] << 16) |
+                        ((uint64_t)frame->choices_ptr[j+3][frame->idx[j+3]] << 24) |
+                        ((uint64_t)frame->choices_ptr[j+4][frame->idx[j+4]] << 32) |
+                        ((uint64_t)frame->choices_ptr[j+5][frame->idx[j+5]] << 40) |
+                        ((uint64_t)frame->choices_ptr[j+6][frame->idx[j+6]] << 48) |
+                        ((uint64_t)frame->choices_ptr[j+7][frame->idx[j+7]] << 56);
+                } else {
+                    for (int k = j; k < 32; ++k) {
+                        new_state[k] = frame->choices_ptr[k][frame->idx[k]];
+                    }
+                    break;
+                }
+            }
+            
+#ifdef PROFILE
+            time_state_generation += get_time_ms() - start_state;
+#endif
+            
+            // Push new frame for next round
+            stack[sp].round = frame->round + 1;
+            memset(stack[sp].idx, 0, 32);
+            stack[sp].counter_pos = 0;
+            sp++;
+            
+            frame->counter_pos = 1; // Mark as having pushed a child
+            continue;
+        }
+        
+        // Child returned, increment counter and try next combination
         int k = 0;
         for (; k < 32; ++k) {
-            if (++idx[k] < choices_per_pos[k]) {
+            if (++frame->idx[k] < frame->choices_per_pos[k]) {
                 break;  // No carry needed
             }
-            idx[k] = 0;  // Wrap and continue to next digit
+            frame->idx[k] = 0;  // Wrap and continue to next digit
         }
-        if (k == 32) break;  // Exhausted all combinations
+        
+        if (k == 32) {
+            // Exhausted all combinations for this frame
+            sp--;
+        } else {
+            // More combinations to try
+            frame->counter_pos = 0;
+        }
     }
     
-    recursion_depth--;
-    return 0; // No solution found in this branch
+    return 0; // No solution found
 }
 
 #ifdef PROFILE
 static void print_dfs_profile(void)
 {
-    double total_time = time_matrix_computation + time_combination_calc + time_state_generation;
+    double total_time = time_matrix_computation + time_state_generation;
     printf("  Optimized DFS Profiling:\n");
     printf("    Total calls: %d\n", call_count);
     printf("    Matrix computation: %.2f ms (%.1f%%)\n", time_matrix_computation, 
            time_matrix_computation / total_time * 100);
-    printf("    Combination calc: %.2f ms (%.1f%%)\n", time_combination_calc,
-           time_combination_calc / total_time * 100);
     printf("    State generation: %.2f ms (%.1f%%)\n", time_state_generation,
            time_state_generation / total_time * 100);
 }
@@ -506,11 +574,10 @@ int main(void)
 #ifdef PROFILE
         call_count = 0;
         time_matrix_computation = 0.0;
-        time_combination_calc = 0.0;
         time_state_generation = 0.0;
 #endif
         recursion_depth = 0;
-        int dfs_found = dfs_recursive_optimized(c256, 0, dfs_solution, time(NULL));
+        int dfs_found = dfs_iterative_optimized(c256, dfs_solution, time(NULL));
         double dfs_time = get_time_ms() - dfs_start;
         
         if (dfs_found) {

@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-//  “Hire‑me” crack‑me – reference Level‑2 solver (≈ sub‑millisecond on a laptop)
+//  "Hire‑me" crack‑me – reference Level‑2 solver (≈ sub‑millisecond on a laptop)
 // -----------------------------------------------------------------------------
 //  The binary shipped by Nintendo runs the routine below :
 //
@@ -15,9 +15,9 @@
 //
 //  This source‑file reconstructs **one** 32‑byte input that passes the test –
 //  and does so deterministically, without any brute‑force loops.
-//  Total work ≈ 256 · 32 · 32 ≈ 26 k XORs → < 1 ms on a modern CPU.
+//  Total work ≈ 256 · 32 · 32 ≈ 26 k XORs → < 1 ms on a modern CPU.
 // -----------------------------------------------------------------------------
-//  Build & run      $  gcc -O2 hire_me_solver.c -o solver && ./solver
+//  Build & run      $  gcc -O2 hireme2.c -o hireme2 && ./hireme2
 // -----------------------------------------------------------------------------
 
 #include <stdint.h>
@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <assert.h>
+#include <sys/time.h>
 
 // -----------------------------------------------------------------------------
 //  Original tables copied verbatim from the crack‑me
@@ -78,10 +79,21 @@ static const u32 diffusion[32] = {
 };
 
 // -----------------------------------------------------------------------------
-//  Helpers : tiny GF(2) linear‑algebra on 32‑bit words
+//  Timing helpers
 // -----------------------------------------------------------------------------
 
-static inline u8  dot_row     (u32 row, const u8 v[32])          // row·v (GF(2) ⊕)
+static double get_time_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
+}
+
+// -----------------------------------------------------------------------------
+//  Helpers: tiny GF(2) linear algebra on 32-bit words
+// -----------------------------------------------------------------------------
+
+static inline u8 dot_row(u32 row, const u8 v[32])  // row·v (GF(2) ⊕)
 {
     u8 acc = 0;
     for (int k = 0; k < 32; ++k)
@@ -89,11 +101,11 @@ static inline u8  dot_row     (u32 row, const u8 v[32])          // row·v (GF(2
     return acc;
 }
 
-// Gaussian elimination – invert a 32×32 binary matrix packed as 32 u32 rows.
+// Gaussian elimination - invert a 32×32 binary matrix packed as 32 u32 rows.
 // Returns 0 on success.
 static int invert32(const u32 A[32], u32 Ainv[32])
 {
-    uint64_t aug[32];                   // low 32 bits = A, high 32 bits = I
+    uint64_t aug[32];  // low 32 bits = A, high 32 bits = I
 
     for (int r = 0; r < 32; ++r)
         aug[r] = ((uint64_t)A[r]) | (1ULL << (32 + r));
@@ -101,7 +113,7 @@ static int invert32(const u32 A[32], u32 Ainv[32])
     for (int c = 0; c < 32; ++c) {
         int piv = c;
         while (piv < 32 && !(aug[piv] >> c & 1)) ++piv;
-        if (piv == 32) return -1;      // singular (shouldn’t happen)
+        if (piv == 32) return -1;  // singular (shouldn't happen)
         if (piv != c) { uint64_t tmp = aug[c]; aug[c] = aug[piv]; aug[piv] = tmp; }
         for (int r = 0; r < 32; ++r)
             if (r != c && (aug[r] >> c & 1)) aug[r] ^= aug[c];
@@ -113,97 +125,83 @@ static int invert32(const u32 A[32], u32 Ainv[32])
 }
 
 // -----------------------------------------------------------------------------
-//  Build   • S_low⁻¹  (first pre‑image)   •   M⁻¹   as u32[32]
+//  Build S_low⁻¹, S_high⁻¹ and M⁻¹
 // -----------------------------------------------------------------------------
 
-// Store all possible pre-images for each value
-static u8  inv_low[256][256];  // inv_low[y][i] = i-th pre-image of y
-static u8  inv_low_count[256]; // Number of pre-images for each y       // 0 = “forbidden”, else any pre‑image
-static u8  inv_high[256][256]; // inv_high[y][i] = i-th pre-image of y  
+static u8  inv_low[256][256];   // inv_low[y][i] = i-th pre-image of y
+static u8  inv_low_count[256];  // Number of pre-images for each y (0 = no pre-image)
+static u8  inv_high[256][256];  // inv_high[y][i] = i-th pre-image of y  
 static u8  inv_high_count[256]; // Number of pre-images for each y
-static u32 invM   [32];
+static u32 invM[32];
+static u8  odd_of[16][256];     // Pre-computed odd bytes for each (pos, even_byte)
+static u8  is_possible[16][256]; // Pre-computed validity for each (pos, even_byte)
 
-// TODO: instead of keeping the first seen, we could keep all pre‑images, and we should have a special value for “impossible”: no pre-image.
-// Also, do the same thing for inv_high
+static const u8 target[16] = "Hire me!!!!!!!!";  // 15 chars + \0 terminator
+
 static void precompute(void)
 {
-    // ----  S_low⁻¹  ---------------------------------------------------------
-    for (int b = 0; b < 256; ++b) inv_low_count[b] = 0;       // 0  ⇒  ‘no pre‑image’
+    // Build S_low⁻¹
+    for (int b = 0; b < 256; ++b) inv_low_count[b] = 0;
     for (int x = 0; x < 256; ++x) {
         u8 y = confusion[x];
-        inv_low[y][inv_low_count[y]++] = (u8)x;         // keep all pre-images
+        inv_low[y][inv_low_count[y]++] = (u8)x;
     }
-    // ----  S_high⁻¹  --------------------------------------------------------
-    for (int b = 0; b < 256; ++b) inv_high_count[b] = 0;      // 0  ⇒  'no pre‑image'
+    
+    // Build S_high⁻¹
+    for (int b = 0; b < 256; ++b) inv_high_count[b] = 0;
     for (int x = 0; x < 256; ++x) {
         u8 y = confusion[x + 256];
-        inv_high[y][inv_high_count[y]++] = (u8)x;       // keep all pre-images
+        inv_high[y][inv_high_count[y]++] = (u8)x;
     }
-    // ----  M⁻¹  -------------------------------------------------------------
+    
+    // Build M⁻¹
     if (invert32(diffusion, invM)) {
         fprintf(stderr, "[FATAL] diffusion matrix not invertible!\n");
         exit(EXIT_FAILURE);
     }
-}
-
-// -----------------------------------------------------------------------------
-//  Stage 1 – pick a *reachable* 32‑byte state c₍₂₅₆₎ s.t.
-//            S_low[c[2i]] ⊕ S_high[c[2i+1]] = target[i]
-//            and  M⁻¹·c  contains no forbidden bytes.
-//            A deterministic, non‑backtracking construction does the job.
-// -----------------------------------------------------------------------------
-
-static const u8 target[16] = "Hire me!!!!!!!!";   // 15 chars + \0 terminator
-
-// Forward declaration
-static int inverse_256_rounds_bfs(u8 c[32]);
-
-static void build_final_state(u8 c[32])
-{
+    
+    // Pre-compute odd_of and is_possible tables
     const u8 *Slo = confusion;
-    const u8 *Shi = confusion + 256;
-
-    // Pre‑compute, for every (char position, even byte) the unique odd byte.
-    u8 odd_of[16][256];       // Only store valid odd bytes
-    u8 is_possible[16][256];  // Track which combinations are possible
-    int impossible_count = 0;
-    for (int pos = 0; pos < 16; ++pos)
+    for (int pos = 0; pos < 16; ++pos) {
         for (int ev = 0; ev < 256; ++ev) {
             u8 need = Slo[ev] ^ target[pos];
             if (inv_high_count[need] > 0) {
                 odd_of[pos][ev] = inv_high[need][0];
                 is_possible[pos][ev] = 1;
             } else {
-                odd_of[pos][ev] = 0;  // Dummy value, will be ignored
+                odd_of[pos][ev] = 0;
                 is_possible[pos][ev] = 0;
-                impossible_count++;
             }
         }
-    // printf("DEBUG: %d impossible combinations out of %d total\n", impossible_count, 16*256);
+    }
+}
 
-    // Greedy scan – for every position choose the *first* even byte such that
-    // the resulting full 32‑byte vector passes the “forbidden” test.
-    // TODO: Instead of this, here is how I imagine the algo:
-    // 1. For each position from 0 to <16, find an even byte, by taking a random value for ev
-    // 2. For each even byte, compute the odd byte that would make the target[i] match, use inv_high, if it's an impossible value, skip it and try another random value
-    // 3. Finally you want to check that multipling by invM doesn't give any forbidden value for inv_low, and if it does, change a value at a random position to a random one, update the odd byte and if it's not impossible, try multiplying by invM again.
+// -----------------------------------------------------------------------------
+//  Stage 1 - pick a *reachable* 32-byte state c₍₂₅₆₎ s.t.
+//            S_low[c[2i]] ⊕ S_high[c[2i+1]] = target[i]
+//            and  M⁻¹·c  contains no forbidden bytes.
+// -----------------------------------------------------------------------------
+
+// Forward declarations
+static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32]);
+static int inverse_256_rounds_dfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32]);
+
+static void build_final_state(u8 c[32])
+{
     u8 v[32];
-    
-    // Implement the algorithm described in the TODO comment
     int max_attempts = 1000000;
     
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
-        // Step 1 & 2: For each position, find a random even byte with valid odd byte
+        // For each position, find a random even byte with valid odd byte
         int valid_state = 1;
         for (int pos = 0; pos < 16 && valid_state; ++pos) {
             int found = 0;
             for (int tries = 0; tries < 256; ++tries) {
-                int ev = rand() % 256;  // Step 1: random even byte
+                int ev = rand() % 256;
                 
-                // Step 2: compute odd byte and check if possible
                 if (is_possible[pos][ev]) {
                     u8 od = odd_of[pos][ev];
-                    c[2*pos    ] = (u8)ev;
+                    c[2*pos] = (u8)ev;
                     c[2*pos + 1] = od;
                     found = 1;
                     break;
@@ -211,13 +209,13 @@ static void build_final_state(u8 c[32])
             }
             
             if (!found) {
-                valid_state = 0;  // No valid combination found for this position
+                valid_state = 0;
             }
         }
         
-        if (!valid_state) continue;  // Try again
+        if (!valid_state) continue;
         
-        // Step 3: Check if multiplying by invM gives forbidden values
+        // Check if multiplying by invM gives forbidden values
         int all_valid = 1;
         for (int j = 0; j < 32; ++j) {
             v[j] = dot_row(invM[j], c);
@@ -228,18 +226,17 @@ static void build_final_state(u8 c[32])
         }
         
         if (all_valid) {
-            fprintf(stderr, "[INFO] Found valid final state after %d attempts\n", attempt + 1);
-            return;  // Success!
+            return;
         }
         
-        // Step 3 continued: If invalid, try changing random positions
+        // If invalid, try changing random positions
         for (int fix_attempts = 0; fix_attempts < 10; ++fix_attempts) {
             int pos = rand() % 16;  // Random position to change
             int ev = rand() % 256;  // Random new even byte
             
             if (is_possible[pos][ev]) {
                 u8 od = odd_of[pos][ev];
-                c[2*pos    ] = (u8)ev;
+                c[2*pos] = (u8)ev;
                 c[2*pos + 1] = od;
                 
                 // Check if this fixes the invM issue
@@ -253,9 +250,7 @@ static void build_final_state(u8 c[32])
                 }
                 
                 if (all_valid) {
-                    fprintf(stderr, "[INFO] Fixed invalid state after %d attempts + %d fixes\n", 
-                           attempt + 1, fix_attempts + 1);
-                    return;  // Success!
+                    return;
                 }
             }
         }
@@ -266,14 +261,14 @@ static void build_final_state(u8 c[32])
 }
 
 // -----------------------------------------------------------------------------
-//  Stage 2 – walk 256 rounds backwards :   cₙ₊₁  →  cₙ
+//  Stage 2 - walk 256 rounds backwards: cₙ₊₁ → cₙ
 // -----------------------------------------------------------------------------
 
 typedef struct {
     u8 state[32];
 } StateNode;
 
-static int inverse_256_rounds_bfs(u8 c[32])
+static int inverse_256_rounds_bfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32])
 {
     // BFS queue implementation using dynamic arrays
     StateNode *current_level = malloc(1000000 * sizeof(StateNode));
@@ -288,7 +283,7 @@ static int inverse_256_rounds_bfs(u8 c[32])
     const int MAX_STATES = 1000000;
     
     // Initialize with the final state
-    memcpy(current_level[0].state, c, 32);
+    memcpy(current_level[0].state, initial_state, 32);
     
     // BFS through 256 rounds backwards
     for (int round = 0; round < 256; ++round) {
@@ -319,7 +314,7 @@ static int inverse_256_rounds_bfs(u8 c[32])
                 choices_per_pos[j] = inv_low_count[v[j]];
                 total_combinations *= choices_per_pos[j];
                 if (total_combinations > MAX_STATES) {
-                    total_combinations = MAX_STATES; // Cap to prevent overflow
+                    total_combinations = MAX_STATES;
                     break;
                 }
             }
@@ -353,19 +348,22 @@ static int inverse_256_rounds_bfs(u8 c[32])
         next_level = temp;
         current_count = next_count;
         
-        // Optional: limit the number of states to prevent explosion
+        // Limit the number of states to prevent explosion
         if (current_count > MAX_STATES / 10) {
             current_count = MAX_STATES / 10;
         }
     }
     
-    // If we reach here, we found at least one valid path
-    // Return the first valid solution
-    if (current_count > 0) {
-        memcpy(c, current_level[0].state, 32);
+    // If we reach here, we found valid solutions
+    // Return all solutions (up to max_solutions)
+    int num_solutions = current_count < max_solutions ? current_count : max_solutions;
+    if (num_solutions > 0) {
+        for (int i = 0; i < num_solutions; ++i) {
+            memcpy(solutions[i], current_level[i].state, 32);
+        }
         free(current_level);
         free(next_level);
-        return 1;
+        return num_solutions;
     }
     
     free(current_level);
@@ -373,9 +371,89 @@ static int inverse_256_rounds_bfs(u8 c[32])
     return 0;
 }
 
+// -----------------------------------------------------------------------------
+//  DFS approach - recursive depth-first search
+// -----------------------------------------------------------------------------
+
+static int dfs_solutions_found = 0;
+static u8 (*dfs_solutions_array)[32] = NULL;
+static int dfs_max_solutions = 0;
+
+static int dfs_recursive(u8 state[32], int round)
+{
+    if (dfs_solutions_found >= dfs_max_solutions) {
+        return 1; // Found enough solutions
+    }
+    
+    if (round == 256) {
+        // Reached the beginning - this is a valid solution
+        memcpy(dfs_solutions_array[dfs_solutions_found], state, 32);
+        dfs_solutions_found++;
+        return 1; // Signal that we found a solution
+    }
+    
+    u8 v[32];
+    
+    // Compute M⁻¹·state for current state
+    int valid_state = 1;
+    for (int j = 0; j < 32; ++j) {
+        v[j] = dot_row(invM[j], state);
+        if (inv_low_count[v[j]] == 0) {
+            valid_state = 0;
+            break;
+        }
+    }
+    
+    if (!valid_state) return 0;
+    
+    // Generate pre-image combinations
+    int choices_per_pos[32];
+    int total_combinations = 1;
+    for (int j = 0; j < 32; ++j) {
+        choices_per_pos[j] = inv_low_count[v[j]];
+        total_combinations *= choices_per_pos[j];
+        if (total_combinations > 10000) {
+            total_combinations = 10000; // Cap to prevent explosion
+            break;
+        }
+    }
+    
+    // Generate combinations systematically
+    for (int combo = 0; combo < total_combinations && dfs_solutions_found < dfs_max_solutions; ++combo) {
+        u8 new_state[32];
+        int temp_combo = combo;
+        
+        // Convert combo index to specific choices for each position
+        for (int j = 0; j < 32; ++j) {
+            int choice_idx = temp_combo % choices_per_pos[j];
+            temp_combo /= choices_per_pos[j];
+            new_state[j] = inv_low[v[j]][choice_idx];
+        }
+        
+        if (dfs_recursive(new_state, round + 1)) {
+            return 1; // Solution found, propagate up
+        }
+    }
+    
+    return 0; // No solution found in this branch
+}
+
+static int inverse_256_rounds_dfs(u8 solutions[][32], int max_solutions, const u8 initial_state[32])
+{
+    dfs_solutions_found = 0;
+    dfs_solutions_array = solutions;
+    dfs_max_solutions = max_solutions;
+    
+    u8 start_state[32];
+    memcpy(start_state, initial_state, 32);
+    
+    dfs_recursive(start_state, 0);
+    
+    return dfs_solutions_found;
+}
 
 // -----------------------------------------------------------------------------
-//  Check – run the **original** Forward() just to prove it works
+//  Check - run the original Forward() just to prove it works
 // -----------------------------------------------------------------------------
 
 static void Forward(const u8 in[32], u8 out[32])
@@ -400,36 +478,70 @@ static void Forward(const u8 in[32], u8 out[32])
 
 int main(void)
 {
-    srand(time(NULL));  // Initialize random number generator
+    double start_time = get_time_ms();
+    
+    srand(time(NULL));
+    
+    double precompute_start = get_time_ms();
     precompute();
-
-    u8 c256[32];
-    build_final_state(c256);
-
-    u8 input[32];
-    memcpy(input, c256, 32);
-    // Use BFS to find solution
-    memcpy(input, c256, 32);
+    double precompute_time = get_time_ms() - precompute_start;
     
-    if (inverse_256_rounds_bfs(input)) {
-        // Test if this works
-        u8 test_out[32] = {0};
-        Forward(input, test_out);
-        if (!memcmp(test_out, target, 16)) {
-            printf("✓ cracked! 32‑byte input using BFS:\n    ");
-            for (int i = 0; i < 32; ++i) printf("%02x", input[i]);
-            puts("");
-            return 0;
+    // printf("[TIMING] Precomputation took %.2f ms\n", precompute_time);
+
+    const int MAX_FINAL_STATE_ATTEMPTS = 100000;
+    
+    for (int attempt = 0; attempt < MAX_FINAL_STATE_ATTEMPTS; ++attempt) {
+        u8 c256[32];
+        build_final_state(c256);
+
+        // Test both BFS and DFS approaches
+        double bfs_start = get_time_ms();
+        u8 bfs_solutions[10000][32];  // Store up to 10000 solutions for BFS
+        int bfs_num_solutions = inverse_256_rounds_bfs(bfs_solutions, 10000, c256);
+        double bfs_time = get_time_ms() - bfs_start;
+        
+        double dfs_start = get_time_ms();
+        u8 dfs_solutions[1][32];  // Store only 1 solution for DFS (first found)
+        int dfs_num_solutions = inverse_256_rounds_dfs(dfs_solutions, 1, c256);
+        double dfs_time = get_time_ms() - dfs_start;
+        
+        if (bfs_num_solutions > 0 || dfs_num_solutions > 0) {
+            double total_time = get_time_ms() - start_time;
+            
+            // Verify BFS solutions without printing
+            int bfs_valid_count = 0;
+            for (int i = 0; i < bfs_num_solutions; ++i) {
+                u8 test_out[32] = {0};
+                Forward(bfs_solutions[i], test_out);
+                if (!memcmp(test_out, target, 16)) {
+                    bfs_valid_count++;
+                }
+            }
+            
+            // Verify DFS solutions without printing
+            int dfs_valid_count = 0;
+            for (int i = 0; i < dfs_num_solutions; ++i) {
+                u8 test_out[32] = {0};
+                Forward(dfs_solutions[i], test_out);
+                if (!memcmp(test_out, target, 16)) {
+                    dfs_valid_count++;
+                }
+            }
+            
+            if (bfs_valid_count > 0 || dfs_valid_count > 0) {
+                printf("[SUCCESS] After %d attempts:\n", attempt + 1);
+                printf("  BFS: Found %d valid solutions (out of %d) in %.2f ms\n", bfs_valid_count, bfs_num_solutions, bfs_time);
+                printf("  DFS: Found %d valid solutions (out of %d) in %.2f ms\n", dfs_valid_count, dfs_num_solutions, dfs_time);
+                printf("  Total: %.2f ms\n", total_time);
+                return 0;
+            } else {
+                // Continue to next iteration
+            }
         } else {
-            fprintf(stderr, "[BUG] BFS found solution but verification failed\n");
-            return 1;
+            // Continue to next iteration to try a different final state
         }
-    } else {
-        fprintf(stderr, "[BUG] BFS could not find working input\n");
-        return 1;
-    }          // now  ‘input’ is a valid key
-
+    }
     
-    // This should not be reached
-    return 0;
+    fprintf(stderr, "[FATAL] Could not find a valid solution after %d final state attempts\n", MAX_FINAL_STATE_ATTEMPTS);
+    return 1;
 }

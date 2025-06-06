@@ -273,14 +273,20 @@ static inline u8 dot_row_optimized(u32 row_mask, const u8 * __restrict state)
     uint8x16_t and_high = vandq_u8(state_high128, mask_high128);
     uint8x16_t acc_vec  = veorq_u8(and_low, and_high);
 
-    // 6) Horizontal XOR reduction of all 16 bytes
-    uint8_t partial[16];
-    vst1q_u8(partial, acc_vec);
-    u8 result = 0;
-    for (int i = 0; i < 16; i++) {
-        result ^= partial[i];
-    }
-    return result;
+    // 6) Horizontal XOR reduction of the 16 bytes in acc_vec → single u8
+    //
+    //    a) Split acc_vec into two 8×8‐bit lanes
+    //    b) XOR the two lanes together → one 8×8‐bit vector x1
+    //    c) Do a sequence of pairwise / byte‐shifting XORs on x1 to collapse 8 bytes → 1 byte
+    //
+    uint8x8_t lo_lane = vget_low_u8(acc_vec);
+    uint8x8_t hi_lane = vget_high_u8(acc_vec);
+    uint8x8_t x1 = veor_u8(lo_lane, hi_lane);
+    // pairwise‐XOR down from 8→4→2→1:
+    uint8x8_t x2 = veor_u8(x1, vext_u8(x1, x1, 4)); // now bytes [0..3] ^= bytes [4..7]
+    uint8x8_t x3 = veor_u8(x2, vext_u8(x2, x2, 2)); // now bytes [0..1] ^= bytes [2..3]
+    uint8x8_t x4 = veor_u8(x3, vext_u8(x3, x3, 1)); // now byte[0] ^= byte[1]
+    return vget_lane_u8(x4, 0);
 }
 
 static int invert32(const u32 A[32], u32 Ainv[32])

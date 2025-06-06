@@ -156,7 +156,7 @@ static void precompute(void)
 static const u8 target[16] = "Hire me!!!!!!!!";   // 15 chars + \0 terminator
 
 // Forward declaration
-static int inverse_256_rounds_with_choices(u8 c[32], int choice_indices[256][32]);
+static int inverse_256_rounds_bfs(u8 c[32]);
 
 static void build_final_state(u8 c[32])
 {
@@ -269,23 +269,108 @@ static void build_final_state(u8 c[32])
 //  Stage 2 – walk 256 rounds backwards :   cₙ₊₁  →  cₙ
 // -----------------------------------------------------------------------------
 
-static int inverse_256_rounds_with_choices(u8 c[32], int choice_indices[256][32])
+typedef struct {
+    u8 state[32];
+} StateNode;
+
+static int inverse_256_rounds_bfs(u8 c[32])
 {
-    u8 v[32], p[32];
-    // Walk backwards through 256 rounds
-    // TODO: I want this to be kind of a BFS where you explore all possible choices for each round
+    // BFS queue implementation using dynamic arrays
+    StateNode *current_level = malloc(1000000 * sizeof(StateNode));
+    StateNode *next_level = malloc(1000000 * sizeof(StateNode));
+    if (!current_level || !next_level) {
+        fprintf(stderr, "[FATAL] Memory allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    int current_count = 1;
+    int next_count = 0;
+    const int MAX_STATES = 1000000;
+    
+    // Initialize with the final state
+    memcpy(current_level[0].state, c, 32);
+    
+    // BFS through 256 rounds backwards
     for (int round = 0; round < 256; ++round) {
-        // Compute M⁻¹·c
-        for (int j = 0; j < 32; ++j) {
-            v[j] = dot_row(invM[j], c);
-            if (inv_low_count[v[j]] == 0) return 0;  // impossible
+        next_count = 0;
+        
+        // Process all states at current level
+        for (int state_idx = 0; state_idx < current_count; ++state_idx) {
+            u8 *curr_state = current_level[state_idx].state;
+            u8 v[32];
+            
+            // Compute M⁻¹·c for current state
+            int valid_state = 1;
+            for (int j = 0; j < 32; ++j) {
+                v[j] = dot_row(invM[j], curr_state);
+                if (inv_low_count[v[j]] == 0) {
+                    valid_state = 0;
+                    break;
+                }
+            }
+            
+            if (!valid_state) continue;
+            
+            // Generate ALL possible combinations of pre-images
+            // Calculate total number of combinations
+            int total_combinations = 1;
+            int choices_per_pos[32];
+            for (int j = 0; j < 32; ++j) {
+                choices_per_pos[j] = inv_low_count[v[j]];
+                total_combinations *= choices_per_pos[j];
+                if (total_combinations > MAX_STATES) {
+                    total_combinations = MAX_STATES; // Cap to prevent overflow
+                    break;
+                }
+            }
+            
+            // Generate each combination by treating it as a mixed-radix number
+            for (int combo = 0; combo < total_combinations && next_count < MAX_STATES; ++combo) {
+                u8 temp_state[32];
+                int temp_combo = combo;
+                
+                // Convert combo index to specific choices for each position
+                for (int j = 0; j < 32; ++j) {
+                    int choice_idx = temp_combo % choices_per_pos[j];
+                    temp_combo /= choices_per_pos[j];
+                    temp_state[j] = inv_low[v[j]][choice_idx];
+                }
+                
+                memcpy(next_level[next_count].state, temp_state, 32);
+                next_count++;
+            }
         }
         
-        int found_valid = 0;
-                
-        memcpy(c, p, 32);
+        if (next_count == 0) {
+            free(current_level);
+            free(next_level);
+            return 0;  // No valid paths found
+        }
+        
+        // Swap levels for next iteration
+        StateNode *temp = current_level;
+        current_level = next_level;
+        next_level = temp;
+        current_count = next_count;
+        
+        // Optional: limit the number of states to prevent explosion
+        if (current_count > MAX_STATES / 10) {
+            current_count = MAX_STATES / 10;
+        }
     }
-    return 1;  // success
+    
+    // If we reach here, we found at least one valid path
+    // Return the first valid solution
+    if (current_count > 0) {
+        memcpy(c, current_level[0].state, 32);
+        free(current_level);
+        free(next_level);
+        return 1;
+    }
+    
+    free(current_level);
+    free(next_level);
+    return 0;
 }
 
 
@@ -323,34 +408,24 @@ int main(void)
 
     u8 input[32];
     memcpy(input, c256, 32);
-    // Try multiple choice combinations for inverse rounds  
-    int found_solution = 0;
-    for (int attempt = 0; attempt < 10000 && !found_solution; ++attempt) {
-        memcpy(input, c256, 32);  // reset to final state
-        
-        // Generate random choice indices
-        int choice_indices[256][32];
-        for (int round = 0; round < 256; ++round) {
-            for (int j = 0; j < 32; ++j) {
-                choice_indices[round][j] = rand() % 256;
-            }
-        }
-        
-        if (inverse_256_rounds_with_choices(input, choice_indices)) {
-            // Test if this works
-            u8 test_out[32] = {0};
-            Forward(input, test_out);
-            if (!memcmp(test_out, target, 16)) {
-                printf("✓ cracked! 32‑byte input (attempt %d):\n    ", attempt + 1);
-                for (int i = 0; i < 32; ++i) printf("%02x", input[i]);
-                puts("");
-                return 0;
-            }
-        }
-    }
+    // Use BFS to find solution
+    memcpy(input, c256, 32);
     
-    if (!found_solution) {
-        fprintf(stderr, "[BUG] could not find working input after trying multiple combinations\n");
+    if (inverse_256_rounds_bfs(input)) {
+        // Test if this works
+        u8 test_out[32] = {0};
+        Forward(input, test_out);
+        if (!memcmp(test_out, target, 16)) {
+            printf("✓ cracked! 32‑byte input using BFS:\n    ");
+            for (int i = 0; i < 32; ++i) printf("%02x", input[i]);
+            puts("");
+            return 0;
+        } else {
+            fprintf(stderr, "[BUG] BFS found solution but verification failed\n");
+            return 1;
+        }
+    } else {
+        fprintf(stderr, "[BUG] BFS could not find working input\n");
         return 1;
     }          // now  ‘input’ is a valid key
 

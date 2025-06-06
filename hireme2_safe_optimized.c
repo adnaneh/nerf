@@ -33,9 +33,6 @@
 //    make pgo              # PGO-optimized build
 //    make benchmark        # Performance comparison
 //
-//  For Apple silicon (M1/M2/M3):
-//    clang -O3 -march=native -funroll-loops hireme2_safe_optimized.c -o hireme2_safe_optimized
-//
 // =============================================================================
 
 #include <stdint.h>
@@ -153,41 +150,33 @@ static inline u8 dot_row_optimized(u32 row_mask, const u8 * __restrict state)
     return (u8)_mm_extract_epi8(xor_result, 0) ^ (u8)_mm_extract_epi8(xor_result, 1);
     
 #elif defined(__aarch64__)
-    // ARM64 NEON version - optimized for Apple silicon
-    // This creates the byte-mask entirely in registers, no stack array
-    // Skips 8-byte blocks whose mask byte is zero 
-    // Does horizontal XOR in-register, no round-trip through memory
+    // NEON version for ARM64
+    u8 acc = 0;
+    uint8x16_t acc_vec = vdupq_n_u8(0);
     
-    /* constant with the 8 single-bit values 1,2,4,…,128 */
-    const uint8x8_t bit_mask8 = { 1,2,4,8,16,32,64,128 };
-
-    /* early exit if the entire mask is zero */
-    if (row_mask == 0)  return 0;
-
-    uint8x8_t acc = vdup_n_u8(0);            // running XOR of selected bytes
-
-    /* Four blocks of 8 bytes cover the 32-byte row */
-    for (int blk = 0; blk < 4; ++blk) {
-        uint8_t chunk = (row_mask >> (blk * 8)) & 0xFF;
-        if (!chunk)           continue;       // skip empty 8-bit groups fast
-
-        /* load 8 bytes of 'state' that correspond to the current 8 mask bits */
-        uint8x8_t data = vld1_u8(state + blk * 8);
-
-        /* broadcast the 8-bit chunk, AND with bit_mask8, compare-equal to build 0x00/0xFF mask */
-        uint8x8_t mask_byte  = vdup_n_u8(chunk);
-        uint8x8_t lane_mask  = vtst_u8(vand_u8(mask_byte, bit_mask8), bit_mask8);
-
-        /* masked XOR accumulate */
-        acc = veor_u8(acc, vand_u8(data, lane_mask));
+    // Process 16 bytes at a time with NEON
+    for (int i = 0; i < 32; i += 16) {
+        uint8x16_t state_vec = vld1q_u8(&state[i]);
+        
+        // Create mask vector from row_mask bits
+        u8 mask_bytes[16];
+        for (int j = 0; j < 16; ++j) {
+            mask_bytes[j] = (row_mask >> (i + j)) & 1 ? 0xFF : 0x00;
+        }
+        uint8x16_t mask_vec = vld1q_u8(mask_bytes);
+        
+        // AND operation and accumulate
+        uint8x16_t and_result = vandq_u8(state_vec, mask_vec);
+        acc_vec = veorq_u8(acc_vec, and_result);
     }
-
-    /* in-register horizontal XOR reduction (5 single-cycle instructions) */
-    acc = veor_u8(acc, vrev64_u8(acc));          // xor lanes [0..3] with [4..7]
-    acc = veor_u8(acc, vext_u8(acc, acc, 4));    // xor 32-bit halves
-    acc = veor_u8(acc, vext_u8(acc, acc, 2));    // xor words
-    acc = veor_u8(acc, vext_u8(acc, acc, 1));    // xor final bytes
-    return vget_lane_u8(acc, 0);
+    
+    // Horizontal XOR reduction
+    u8 result[16];
+    vst1q_u8(result, acc_vec);
+    for (int i = 0; i < 16; ++i) {
+        acc ^= result[i];
+    }
+    return acc;
     
 #else
     // Fallback scalar version (highly optimized)

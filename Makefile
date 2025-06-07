@@ -20,8 +20,6 @@ CFLAGS_PGO_USE = $(CFLAGS_FAST) -fprofile-instr-use=default.profdata
 
 TARGET = hireme2_safe_optimized
 SOURCE = hireme2_safe_optimized.c
-TARGET_NO_HEURISTIC = hireme2_safe_optimized_no_heuristic
-SOURCE_NO_HEURISTIC = hireme2_safe_optimized_no_heuristic.c
 
 # Default fast build (no profiling)
 $(TARGET): $(SOURCE)
@@ -30,10 +28,6 @@ $(TARGET): $(SOURCE)
 # Fast build with profiling enabled
 profile: $(SOURCE)
 	$(CC) $(CFLAGS_PROFILE) -o $(TARGET)_profile $< -lm
-
-# Build without heuristic with profiling
-profile_no_heuristic: $(SOURCE_NO_HEURISTIC)
-	$(CC) $(CFLAGS_PROFILE) -o $(TARGET_NO_HEURISTIC)_profile $< -lm
 
 # PGO build: generate profile data
 pgo-gen: $(SOURCE)
@@ -62,26 +56,9 @@ clean:
 BENCH_ITERATIONS ?= 1000
 benchmark: $(TARGET) profile
 	@echo "=== Performance Benchmark ==="
-	@echo "Running $(BENCH_ITERATIONS) iterations..."
+	@echo "Running $(BENCH_ITERATIONS) iterations each..."
 	@echo ""
 	@printf "Fast build (no profiling): "
 	@python3 -c "import subprocess, time; n=$(BENCH_ITERATIONS); start = time.time(); [subprocess.run(['./$(TARGET)'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for _ in range(n)]; elapsed = time.time() - start; total_ms = elapsed * 1000; avg_ms = total_ms / n; print(f'{total_ms:.2f} ms total, {avg_ms:.2f} ms per iteration')"
-	@echo ""
-	@echo "Profile build ($(BENCH_ITERATIONS) iterations):"
-	@python3 benchmark_profile.py $(BENCH_ITERATIONS) ./$(TARGET)_profile
 
-# Compare with and without heuristic
-compare: profile profile_no_heuristic
-	@echo "=== Heuristic Comparison Benchmark ==="
-	@echo "Running $(BENCH_ITERATIONS) iterations for each version..."
-	@echo ""
-	@echo "WITHOUT heuristic optimization:"
-	@python3 benchmark_profile.py $(BENCH_ITERATIONS) ./$(TARGET_NO_HEURISTIC)_profile
-	@echo ""
-	@echo "WITH heuristic optimization:"
-	@python3 benchmark_profile.py $(BENCH_ITERATIONS) ./$(TARGET)_profile
-	@echo ""
-	@echo "=== Summary ==="
-	@python3 compare_heuristic.py $(BENCH_ITERATIONS)
-
-.PHONY: profile profile_no_heuristic pgo-gen pgo-use pgo clean benchmark compare
+.PHONY: profile pgo-gen pgo-use pgo clean benchmark

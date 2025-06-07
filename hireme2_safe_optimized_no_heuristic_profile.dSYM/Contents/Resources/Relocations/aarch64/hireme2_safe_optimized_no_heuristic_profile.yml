@@ -1,5 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     hireme2_safe_optimized_no_heuristic_profile
-relocations:     []
-...

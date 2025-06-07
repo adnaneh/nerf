@@ -93,30 +93,6 @@ static double get_time_ms(void)
 //  Helpers: tiny GF(2) linear algebra on 32-bit words
 // -----------------------------------------------------------------------------
 
-// Original dot_row for comparison
-static inline u8 dot_row_original(u32 row, const u8 v[32])
-{
-    u8 acc = 0;
-    for (int k = 0; k < 32; ++k)
-        if (row >> k & 1) acc ^= v[k];
-    return acc;
-}
-
-// Optimized version using bit manipulation
-static inline u8 dot_row_builtin(u32 row, const u8 v[32])
-{
-    u8 acc = 0;
-    
-    // Process only set bits - skip zeros entirely
-    while (row) {
-        int k = __builtin_ctz(row);  // Count trailing zeros - finds next set bit
-        acc ^= v[k];
-        row &= row - 1;  // Clear the lowest set bit
-    }
-    
-    return acc;
-}
-
 // Use the builtin version as the main one for better performance
 static inline u8 dot_row(u32 row, const u8 v[32])
 {
@@ -127,59 +103,6 @@ static inline u8 dot_row(u32 row, const u8 v[32])
         int k = __builtin_ctz(row);  // Count trailing zeros - finds next set bit
         acc ^= v[k];
         row &= row - 1;  // Clear the lowest set bit
-    }
-    
-    return acc;
-}
-
-// Alternative optimized version using lookup tables (for comparison)
-static inline u8 dot_row_unrolled(u32 row, const u8 v[32])
-{
-    u8 acc = 0;
-    
-    // Unroll the loop in chunks of 8
-    if (row & 0x000000FF) {
-        if (row & (1U << 0)) acc ^= v[0];
-        if (row & (1U << 1)) acc ^= v[1];
-        if (row & (1U << 2)) acc ^= v[2];
-        if (row & (1U << 3)) acc ^= v[3];
-        if (row & (1U << 4)) acc ^= v[4];
-        if (row & (1U << 5)) acc ^= v[5];
-        if (row & (1U << 6)) acc ^= v[6];
-        if (row & (1U << 7)) acc ^= v[7];
-    }
-    
-    if (row & 0x0000FF00) {
-        if (row & (1U << 8)) acc ^= v[8];
-        if (row & (1U << 9)) acc ^= v[9];
-        if (row & (1U << 10)) acc ^= v[10];
-        if (row & (1U << 11)) acc ^= v[11];
-        if (row & (1U << 12)) acc ^= v[12];
-        if (row & (1U << 13)) acc ^= v[13];
-        if (row & (1U << 14)) acc ^= v[14];
-        if (row & (1U << 15)) acc ^= v[15];
-    }
-    
-    if (row & 0x00FF0000) {
-        if (row & (1U << 16)) acc ^= v[16];
-        if (row & (1U << 17)) acc ^= v[17];
-        if (row & (1U << 18)) acc ^= v[18];
-        if (row & (1U << 19)) acc ^= v[19];
-        if (row & (1U << 20)) acc ^= v[20];
-        if (row & (1U << 21)) acc ^= v[21];
-        if (row & (1U << 22)) acc ^= v[22];
-        if (row & (1U << 23)) acc ^= v[23];
-    }
-    
-    if (row & 0xFF000000) {
-        if (row & (1U << 24)) acc ^= v[24];
-        if (row & (1U << 25)) acc ^= v[25];
-        if (row & (1U << 26)) acc ^= v[26];
-        if (row & (1U << 27)) acc ^= v[27];
-        if (row & (1U << 28)) acc ^= v[28];
-        if (row & (1U << 29)) acc ^= v[29];
-        if (row & (1U << 30)) acc ^= v[30];
-        if (row & (1U << 31)) acc ^= v[31];
     }
     
     return acc;

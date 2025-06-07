@@ -224,6 +224,51 @@ static const uint8_t mask8_lut[256][8] = {
     {0x00,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}, {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}
 };
 
+#ifdef PROFILE
+// Profiling counters - Basic timing
+static double time_matrix_computation = 0.0;
+static double time_state_generation = 0.0;
+static int call_count = 0;
+
+// Memory access profiling
+static long long cache_accesses = 0;
+static long long memory_loads = 0;
+static long long memory_stores = 0;
+
+// Loop and iteration counters
+static long long total_dfs_iterations = 0;
+static long long successful_state_generations = 0;
+static long long failed_state_generations = 0;
+static long long matrix_dot_products = 0;
+
+// SIMD vs scalar profiling
+static long long simd_path_calls = 0;
+static long long scalar_path_calls = 0;
+static long long sparse_mask_detections = 0;
+
+// Backtracking and stack profiling
+static int max_stack_depth = 0;
+static long long backtrack_count = 0;
+static long long stack_pushes = 0;
+static long long stack_pops = 0;
+
+// Choice distribution profiling
+static int choice_distribution[33] = {0}; // 0-32 choices per position
+static long long total_choice_evaluations = 0;
+
+// Performance per round profiling
+static double round_times[256] = {0.0};
+static int round_call_counts[256] = {0};
+
+// Additional timing breakdowns
+static double time_counter_increment = 0.0;
+static double time_stack_operations = 0.0;
+static double time_solution_found = 0.0;
+static double time_backtracking = 0.0;
+static double time_loop_overhead = 0.0;
+static double time_initial_setup = 0.0;
+#endif
+
 static double get_time_ms(void)
 {
     struct timeval tv;
@@ -235,18 +280,32 @@ static double get_time_ms(void)
 __attribute__((always_inline))
 static inline u8 dot_row_optimized(u32 row_mask, const u8 * __restrict state)
 {
+#ifdef PROFILE
+    matrix_dot_products++;
+#endif
+    
     // Check if mask is sparse enough to use scalar path
     if (__builtin_popcount(row_mask) <= 4) {
+#ifdef PROFILE
+        scalar_path_calls++;
+        sparse_mask_detections++;
+#endif
         // Use scalar approach for sparse masks
         u8 acc = 0;
         while (row_mask) {
             int k = __builtin_ctz(row_mask);
             acc ^= state[k];
             row_mask &= row_mask - 1;
+#ifdef PROFILE
+            memory_loads++;
+#endif
         }
         return acc;
     }
     
+#ifdef PROFILE
+    simd_path_calls++;
+#endif
     // ARM64 NEON path using 8-byte LUT
     // 1) Split row_mask into four 8-bit chunks
     uint8_t lo8  = (uint8_t)(row_mask        & 0xFF);
@@ -267,6 +326,9 @@ static inline u8 dot_row_optimized(u32 row_mask, const u8 * __restrict state)
     // 4) Load the 32 bytes of state (in two halves)
     uint8x16_t state_low128  = vld1q_u8(state + 0);
     uint8x16_t state_high128 = vld1q_u8(state + 16);
+#ifdef PROFILE
+    memory_loads += 2; // Two 16-byte loads
+#endif
 
     // 5) AND and XOR accumulate
     uint8x16_t and_low  = vandq_u8(state_low128,  mask_low128);
@@ -360,14 +422,6 @@ static void precompute(void)
 //  OPTIMIZATION 1: Mixed-radix counter (removes per-node division/modulo)
 // -----------------------------------------------------------------------------
 
-#ifdef PROFILE
-// Profiling counters
-static double time_matrix_computation = 0.0;
-static double time_state_generation = 0.0;
-static int call_count = 0;
-#endif
-
-
 // OPTIMIZATION 3: Single 2D array for better cache locality
 static u8 state_buffer[257][32] __attribute__((aligned(64)));
 static int recursion_depth = 0;
@@ -389,6 +443,7 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
     
 #ifdef PROFILE
     call_count = 0;
+    double start_setup = get_time_ms();
 #endif
     
     // Initialize first frame
@@ -398,16 +453,32 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
     stack[sp].counter_pos = 0;
     sp++;
     
+#ifdef PROFILE
+    time_initial_setup += get_time_ms() - start_setup;
+#endif
+    
     while (sp > 0) {
+#ifdef PROFILE
+        double start_loop = get_time_ms();
+#endif
         dfs_frame_t *frame = &stack[sp - 1];
         
 #ifdef PROFILE
         call_count++;
+        total_dfs_iterations++;
+        if (sp > max_stack_depth) max_stack_depth = sp;
+        time_loop_overhead += get_time_ms() - start_loop;
 #endif
         
         if (frame->round == 256) {
+#ifdef PROFILE
+            double start_solution = get_time_ms();
+#endif
             // Found solution
             memcpy(solution, state_buffer[sp - 1], 32);
+#ifdef PROFILE
+            time_solution_found += get_time_ms() - start_solution;
+#endif
             return 1;
         }
         
@@ -424,10 +495,20 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
                 const u8 t = dot_row_optimized(invM[j], state_buffer[sp - 1]);
                 frame->v[j] = t;
                 const int c = inv_low_count[t];
-                if (!c) { valid_state = 0; break; }
+                if (!c) { 
+                    valid_state = 0; 
+#ifdef PROFILE
+                    failed_state_generations++;
+#endif
+                    break; 
+                }
                 
                 frame->choices_per_pos[j] = c;
                 frame->choices_ptr[j] = inv_low[t];
+#ifdef PROFILE
+                if (c <= 32) choice_distribution[c]++;
+                total_choice_evaluations++;
+#endif
             }
             
 #ifdef PROFILE
@@ -436,7 +517,15 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
 #endif
             
             if (!valid_state) {
+#ifdef PROFILE
+                double start_invalid_backtrack = get_time_ms();
+#endif
                 sp--; // Pop invalid frame
+#ifdef PROFILE
+                stack_pops++;
+                backtrack_count++;
+                time_backtracking += get_time_ms() - start_invalid_backtrack;
+#endif
                 continue;
             }
         }
@@ -478,12 +567,23 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
             memset(stack[sp].idx, 0, 32);
             stack[sp].counter_pos = 0;
             sp++;
+#ifdef PROFILE
+            stack_pushes++;
+            successful_state_generations++;
+            // Track per-round timing
+            if (frame->round < 256) {
+                round_call_counts[frame->round]++;
+            }
+#endif
             
             frame->counter_pos = 1; // Mark as having pushed a child
             continue;
         }
         
         // Child returned, increment counter and try next combination
+#ifdef PROFILE
+        double start_counter = get_time_ms();
+#endif
         int k = 0;
         for (; k < 32; ++k) {
             if (++frame->idx[k] < frame->choices_per_pos[k]) {
@@ -491,13 +591,30 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
             }
             frame->idx[k] = 0;  // Wrap and continue to next digit
         }
+#ifdef PROFILE
+        time_counter_increment += get_time_ms() - start_counter;
+#endif
         
         if (k == 32) {
+#ifdef PROFILE
+            double start_backtrack = get_time_ms();
+#endif
             // Exhausted all combinations for this frame
             sp--;
+#ifdef PROFILE
+            stack_pops++;
+            backtrack_count++;
+            time_backtracking += get_time_ms() - start_backtrack;
+#endif
         } else {
+#ifdef PROFILE
+            double start_stack_op = get_time_ms();
+#endif
             // More combinations to try
             frame->counter_pos = 0;
+#ifdef PROFILE
+            time_stack_operations += get_time_ms() - start_stack_op;
+#endif
         }
     }
     
@@ -507,13 +624,92 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
 #ifdef PROFILE
 static void print_dfs_profile(void)
 {
-    double total_time = time_matrix_computation + time_state_generation;
+    double total_time = time_matrix_computation + time_state_generation + 
+                       time_counter_increment + time_stack_operations + 
+                       time_backtracking + time_solution_found +
+                       time_loop_overhead + time_initial_setup;
     printf("  Optimized DFS Profiling:\n");
-    printf("    Total calls: %d\n", call_count);
-    printf("    Matrix computation: %.2f ms (%.1f%%)\n", time_matrix_computation, 
+    printf("    Basic Statistics:\n");
+    printf("      Total calls: %d\n", call_count);
+    printf("      Total DFS iterations: %lld\n", total_dfs_iterations);
+    printf("      Max stack depth: %d\n", max_stack_depth);
+    
+    printf("    Timing Breakdown:\n");
+    printf("      Matrix computation: %.2f ms (%.1f%%)\n", time_matrix_computation, 
            time_matrix_computation / total_time * 100);
-    printf("    State generation: %.2f ms (%.1f%%)\n", time_state_generation,
+    printf("      State generation: %.2f ms (%.1f%%)\n", time_state_generation,
            time_state_generation / total_time * 100);
+    printf("      Counter increment: %.2f ms (%.1f%%)\n", time_counter_increment,
+           time_counter_increment / total_time * 100);
+    printf("      Stack operations: %.2f ms (%.1f%%)\n", time_stack_operations,
+           time_stack_operations / total_time * 100);
+    printf("      Backtracking: %.2f ms (%.1f%%)\n", time_backtracking,
+           time_backtracking / total_time * 100);
+    printf("      Solution found: %.2f ms (%.1f%%)\n", time_solution_found,
+           time_solution_found / total_time * 100);
+    printf("      Loop overhead: %.2f ms (%.1f%%)\n", time_loop_overhead,
+           time_loop_overhead / total_time * 100);
+    printf("      Initial setup: %.2f ms (%.1f%%)\n", time_initial_setup,
+           time_initial_setup / total_time * 100);
+    
+    double accounted_time = time_matrix_computation + time_state_generation + 
+                           time_counter_increment + time_stack_operations + 
+                           time_backtracking + time_solution_found +
+                           time_loop_overhead + time_initial_setup;
+    printf("      Total accounted: %.2f ms\n", accounted_time);
+    
+    printf("    Memory Access Patterns:\n");
+    printf("      Memory loads: %lld\n", memory_loads);
+    printf("      Memory stores: %lld\n", memory_stores);
+    printf("      Matrix dot products: %lld\n", matrix_dot_products);
+    
+    printf("    SIMD vs Scalar Usage:\n");
+    printf("      SIMD path calls: %lld\n", simd_path_calls);
+    printf("      Scalar path calls: %lld\n", scalar_path_calls);
+    printf("      Sparse mask detections: %lld\n", sparse_mask_detections);
+    if (simd_path_calls + scalar_path_calls > 0) {
+        printf("      SIMD usage: %.1f%%\n", 
+               (double)simd_path_calls / (simd_path_calls + scalar_path_calls) * 100);
+    }
+    
+    printf("    Stack and Backtracking:\n");
+    printf("      Stack pushes: %lld\n", stack_pushes);
+    printf("      Stack pops: %lld\n", stack_pops);
+    printf("      Backtrack count: %lld\n", backtrack_count);
+    
+    printf("    State Generation:\n");
+    printf("      Successful generations: %lld\n", successful_state_generations);
+    printf("      Failed generations: %lld\n", failed_state_generations);
+    if (successful_state_generations + failed_state_generations > 0) {
+        printf("      Success rate: %.1f%%\n", 
+               (double)successful_state_generations / 
+               (successful_state_generations + failed_state_generations) * 100);
+    }
+    
+    printf("    Choice Distribution (choices per position):\n");
+    for (int i = 1; i <= 10; ++i) {
+        if (choice_distribution[i] > 0) {
+            printf("      %d choices: %d positions\n", i, choice_distribution[i]);
+        }
+    }
+    printf("      Total choice evaluations: %lld\n", total_choice_evaluations);
+    
+    printf("    Round Activity (top 10 most active rounds):\n");
+    int sorted_rounds[256];
+    for (int i = 0; i < 256; ++i) sorted_rounds[i] = i;
+    // Simple bubble sort for top 10
+    for (int i = 0; i < 10 && i < 256; ++i) {
+        for (int j = i + 1; j < 256; ++j) {
+            if (round_call_counts[sorted_rounds[j]] > round_call_counts[sorted_rounds[i]]) {
+                int temp = sorted_rounds[i];
+                sorted_rounds[i] = sorted_rounds[j];
+                sorted_rounds[j] = temp;
+            }
+        }
+        if (round_call_counts[sorted_rounds[i]] > 0) {
+            printf("      Round %d: %d calls\n", sorted_rounds[i], round_call_counts[sorted_rounds[i]]);
+        }
+    }
 }
 #endif
 
@@ -522,7 +718,16 @@ static void build_final_state(u8 c[32])
     u8 v[32];
     int max_attempts = 1000000;
     
+#ifdef PROFILE
+    int build_attempts = 0;
+    int validation_failures = 0;
+    int fix_attempts_used = 0;
+#endif
+    
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
+#ifdef PROFILE
+        build_attempts++;
+#endif
         int valid_state = 1;
         for (int pos = 0; pos < 16 && valid_state; ++pos) {
             int found = 0;
@@ -543,22 +748,36 @@ static void build_final_state(u8 c[32])
             }
         }
         
-        if (!valid_state) continue;
+        if (!valid_state) {
+#ifdef PROFILE
+            validation_failures++;
+#endif
+            continue;
+        }
         
         int all_valid = 1;
         for (int j = 0; j < 32; ++j) {
             v[j] = dot_row_optimized(invM[j], c);
             if (inv_low_count[v[j]] == 0) {
                 all_valid = 0;
+#ifdef PROFILE
+                validation_failures++;
+#endif
                 break;
             }
         }
         
         if (all_valid) {
+#ifdef PROFILE
+            printf("  build_final_state: %d attempts, %d validation failures\n", build_attempts, validation_failures);
+#endif
             return;
         }
         
         for (int fix_attempts = 0; fix_attempts < 10; ++fix_attempts) {
+#ifdef PROFILE
+            fix_attempts_used++;
+#endif
             int pos = rand() % 16;
             int ev = rand() % 256;
             
@@ -623,9 +842,21 @@ int main(void)
     
     const int MAX_FINAL_STATE_ATTEMPTS = 100000;
     
+#ifdef PROFILE
+    double total_build_time = 0.0;
+    int total_attempts = 0;
+#endif
+    
     for (int attempt = 0; attempt < MAX_FINAL_STATE_ATTEMPTS; ++attempt) {
+#ifdef PROFILE
+        total_attempts++;
+        double build_start = get_time_ms();
+#endif
         u8 c256[32];
         build_final_state(c256);
+#ifdef PROFILE
+        total_build_time += get_time_ms() - build_start;
+#endif
 
         double dfs_start = get_time_ms();
         u8 dfs_solution[32];
@@ -633,6 +864,12 @@ int main(void)
         call_count = 0;
         time_matrix_computation = 0.0;
         time_state_generation = 0.0;
+        time_counter_increment = 0.0;
+        time_stack_operations = 0.0;
+        time_solution_found = 0.0;
+        time_backtracking = 0.0;
+        time_loop_overhead = 0.0;
+        time_initial_setup = 0.0;
 #endif
         recursion_depth = 0;
         int dfs_found = dfs_iterative_optimized(c256, dfs_solution, time(NULL));
@@ -640,7 +877,13 @@ int main(void)
         
         if (dfs_found) {
             u8 test_out[32] = {0};
+#ifdef PROFILE
+            double forward_start = get_time_ms();
+#endif
             Forward(dfs_solution, test_out);
+#ifdef PROFILE
+            double forward_time = get_time_ms() - forward_start;
+#endif
             if (!memcmp(test_out, target, 16)) {
 #ifdef PROFILE
                 double total_time = get_time_ms() - start_time;
@@ -649,6 +892,9 @@ int main(void)
                 printf("[SUCCESS] After %d attempts:\n", attempt + 1);
                 printf("  Optimized DFS: Found valid solution in %.2f ms\n", dfs_time);
 #ifdef PROFILE
+                printf("  build_final_state: Total %.2f ms across %d attempts (avg %.2f ms)\n", 
+                       total_build_time, total_attempts, total_build_time / total_attempts);
+                printf("  Forward validation: %.2f ms\n", forward_time);
                 print_dfs_profile();
                 printf("  Total: %.2f ms\n", total_time);
 #endif

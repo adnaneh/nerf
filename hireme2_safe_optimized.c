@@ -237,6 +237,7 @@ static long long memory_stores = 0;
 
 // Loop and iteration counters
 static long long total_dfs_iterations = 0;
+static long long dfs_nodes_visited = 0;
 static long long successful_state_generations = 0;
 static long long failed_state_generations = 0;
 static long long matrix_dot_products = 0;
@@ -434,6 +435,8 @@ typedef struct {
     const u8 *choices_ptr[32];
     u8 v[32];
     int counter_pos;  // Position in mixed-radix counter for continuation
+    long long total_combination;  // Total combinations possible from this node
+    int next_position_order[32];  // Order to try positions (highest combinations first)
 } dfs_frame_t;
 
 static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 seed)
@@ -486,10 +489,12 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
         if (frame->counter_pos == 0) {
 #ifdef PROFILE
             double start_fused = get_time_ms();
+            dfs_nodes_visited++;
 #endif
             
             // OPTIMIZATION 2: Fused single pass with early exit
             int valid_state = 1;
+            frame->total_combination = 1;
             
             for (int j = 0; j < 32; ++j) {
                 const u8 t = dot_row_optimized(invM[j], state_buffer[sp - 1]);
@@ -497,6 +502,7 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
                 const int c = inv_low_count[t];
                 if (!c) { 
                     valid_state = 0; 
+                    frame->total_combination = 0;
 #ifdef PROFILE
                     failed_state_generations++;
 #endif
@@ -505,10 +511,36 @@ static int dfs_iterative_optimized(u8 initial_state[32], u8 solution[32], u32 se
                 
                 frame->choices_per_pos[j] = c;
                 frame->choices_ptr[j] = inv_low[t];
+                frame->total_combination *= c;
+                
 #ifdef PROFILE
                 if (c <= 32) choice_distribution[c]++;
                 total_choice_evaluations++;
 #endif
+            }
+            
+            // Early pruning: if total_combination is 0, no need to continue
+            if (frame->total_combination == 0) {
+                valid_state = 0;
+            }
+            
+            // Sort positions by number of choices (highest first) for better pruning
+            if (valid_state) {
+                for (int j = 0; j < 32; ++j) {
+                    frame->next_position_order[j] = j;
+                }
+                
+                // Simple bubble sort to order positions by choices (descending)
+                for (int i = 0; i < 31; ++i) {
+                    for (int j = i + 1; j < 32; ++j) {
+                        int pos_i = frame->next_position_order[i];
+                        int pos_j = frame->next_position_order[j];
+                        if (frame->choices_per_pos[pos_i] < frame->choices_per_pos[pos_j]) {
+                            frame->next_position_order[i] = pos_j;
+                            frame->next_position_order[j] = pos_i;
+                        }
+                    }
+                }
             }
             
 #ifdef PROFILE
@@ -632,6 +664,7 @@ static void print_dfs_profile(void)
     printf("    Basic Statistics:\n");
     printf("      Total calls: %d\n", call_count);
     printf("      Total DFS iterations: %lld\n", total_dfs_iterations);
+    printf("      DFS nodes visited: %lld\n", dfs_nodes_visited);
     printf("      Max stack depth: %d\n", max_stack_depth);
     
     printf("    Timing Breakdown:\n");
@@ -862,6 +895,7 @@ int main(void)
         u8 dfs_solution[32];
 #ifdef PROFILE
         call_count = 0;
+        dfs_nodes_visited = 0;
         time_matrix_computation = 0.0;
         time_state_generation = 0.0;
         time_counter_increment = 0.0;

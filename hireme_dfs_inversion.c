@@ -218,6 +218,11 @@ static void dfs_find_all_recursive(u8 state[32], int round)
         
         if (total_solutions_found == 1) {
             first_solution_time = get_time_ms() - dfs_start_time;
+            printf("First solution found: ");
+            for (int i = 0; i < 32; i++) {
+                printf("%02x", state[i]);
+            }
+            printf("\n");
         }
         
         if (total_solutions_found % 10000 == 0 && total_solutions_found > 0) {
@@ -316,7 +321,6 @@ int main(void)
         }
     }
 
-    printf("Starting DFS to find ALL solutions from valid state...\n");
     printf("Initial state: ");
     for (int i = 0; i < 32; i++) {
         printf("%02x", c256[i]);
